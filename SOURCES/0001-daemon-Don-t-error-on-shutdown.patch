@@ -1,0 +1,570 @@
+From fbdb5fdfc5f4c5569643239cae1d6fe5fac13717 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Mon, 12 Dec 2022 10:52:58 -0500
+Subject: [PATCH] daemon: Don't error on shutdown
+
+Right now we complain if shutdown happens while the display is
+comming up.
+
+This commit detects that case and avoids the error in that case.
+---
+ daemon/gdm-display.c | 28 +++++++++++++++++++++++++++-
+ daemon/gdm-manager.c | 11 +++++++----
+ 2 files changed, 34 insertions(+), 5 deletions(-)
+
+diff --git a/daemon/gdm-display.c b/daemon/gdm-display.c
+index 9438fe72..a93857e9 100644
+--- a/daemon/gdm-display.c
++++ b/daemon/gdm-display.c
+@@ -66,86 +66,88 @@ typedef struct _GdmDisplayPrivate
+         char                 *x11_display_name;
+         int                   status;
+         time_t                creation_time;
+ 
+         char                 *x11_cookie;
+         gsize                 x11_cookie_size;
+         GdmDisplayAccessFile *access_file;
+ 
+         guint                 finish_idle_id;
+ 
+         xcb_connection_t     *xcb_connection;
+         int                   xcb_screen_number;
+ 
+         GDBusConnection      *connection;
+         GdmDisplayAccessFile *user_access_file;
+ 
+         GdmDBusDisplay       *display_skeleton;
+         GDBusObjectSkeleton  *object_skeleton;
+ 
+         GDBusProxy           *accountsservice_proxy;
+ 
+         /* this spawns and controls the greeter session */
+         GdmLaunchEnvironment *launch_environment;
+ 
+         guint                 is_local : 1;
+         guint                 is_initial : 1;
+         guint                 allow_timed_login : 1;
+         guint                 have_existing_user_accounts : 1;
+         guint                 doing_initial_setup : 1;
+         guint                 session_registered : 1;
++        guint                 shutting_down : 1;
+ 
+         GStrv                 supported_session_types;
+ } GdmDisplayPrivate;
+ 
+ enum {
+         PROP_0,
+         PROP_ID,
+         PROP_STATUS,
+         PROP_SEAT_ID,
+         PROP_SESSION_ID,
+         PROP_SESSION_CLASS,
+         PROP_SESSION_TYPE,
+         PROP_REMOTE_HOSTNAME,
+         PROP_X11_DISPLAY_NUMBER,
+         PROP_X11_DISPLAY_NAME,
+         PROP_X11_COOKIE,
+         PROP_X11_AUTHORITY_FILE,
+         PROP_IS_CONNECTED,
+         PROP_IS_LOCAL,
+         PROP_LAUNCH_ENVIRONMENT,
+         PROP_IS_INITIAL,
+         PROP_ALLOW_TIMED_LOGIN,
+         PROP_HAVE_EXISTING_USER_ACCOUNTS,
+         PROP_DOING_INITIAL_SETUP,
+         PROP_SESSION_REGISTERED,
+         PROP_SUPPORTED_SESSION_TYPES,
++        PROP_SHUTTING_DOWN,
+ };
+ 
+ static void     gdm_display_class_init  (GdmDisplayClass *klass);
+ static void     gdm_display_init        (GdmDisplay      *self);
+ static void     gdm_display_finalize    (GObject         *object);
+ static void     queue_finish            (GdmDisplay      *self);
+ static void     _gdm_display_set_status (GdmDisplay *self,
+                                          int         status);
+ static gboolean wants_initial_setup (GdmDisplay *self);
+ G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (GdmDisplay, gdm_display, G_TYPE_OBJECT)
+ 
+ GQuark
+ gdm_display_error_quark (void)
+ {
+         static GQuark ret = 0;
+         if (ret == 0) {
+                 ret = g_quark_from_static_string ("gdm_display_error");
+         }
+ 
+         return ret;
+ }
+ 
+ time_t
+ gdm_display_get_creation_time (GdmDisplay *self)
+ {
+         GdmDisplayPrivate *priv;
+ 
+         g_return_val_if_fail (GDM_IS_DISPLAY (self), 0);
+ 
+         priv = gdm_display_get_instance_private (self);
+@@ -665,61 +667,61 @@ gdm_display_disconnect (GdmDisplay *self)
+         }
+ 
+         xcb_flush (priv->xcb_connection);
+ 
+         g_clear_pointer (&priv->xcb_connection, xcb_disconnect);
+ }
+ 
+ gboolean
+ gdm_display_unmanage (GdmDisplay *self)
+ {
+         GdmDisplayPrivate *priv;
+ 
+         g_return_val_if_fail (GDM_IS_DISPLAY (self), FALSE);
+ 
+         priv = gdm_display_get_instance_private (self);
+ 
+         gdm_display_disconnect (self);
+ 
+         if (priv->user_access_file != NULL) {
+                 gdm_display_access_file_close (priv->user_access_file);
+                 g_object_unref (priv->user_access_file);
+                 priv->user_access_file = NULL;
+         }
+ 
+         if (priv->access_file != NULL) {
+                 gdm_display_access_file_close (priv->access_file);
+                 g_object_unref (priv->access_file);
+                 priv->access_file = NULL;
+         }
+ 
+-        if (!priv->session_registered) {
++        if (!priv->session_registered && !priv->shutting_down) {
+                 g_warning ("GdmDisplay: Session never registered, failing");
+                 _gdm_display_set_status (self, GDM_DISPLAY_FAILED);
+         } else {
+                 _gdm_display_set_status (self, GDM_DISPLAY_UNMANAGED);
+         }
+ 
+         return TRUE;
+ }
+ 
+ gboolean
+ gdm_display_get_id (GdmDisplay         *self,
+                     char              **id,
+                     GError            **error)
+ {
+         GdmDisplayPrivate *priv;
+ 
+         g_return_val_if_fail (GDM_IS_DISPLAY (self), FALSE);
+ 
+         priv = gdm_display_get_instance_private (self);
+         if (id != NULL) {
+                 *id = g_strdup (priv->id);
+         }
+ 
+         return TRUE;
+ }
+ 
+ gboolean
+ gdm_display_get_x11_display_name (GdmDisplay   *self,
+                                   char        **x11_display,
+                                   GError      **error)
+@@ -851,60 +853,70 @@ _gdm_display_set_x11_cookie (GdmDisplay     *self,
+ {
+         GdmDisplayPrivate *priv;
+ 
+         priv = gdm_display_get_instance_private (self);
+         g_free (priv->x11_cookie);
+         priv->x11_cookie = g_strdup (x11_cookie);
+ }
+ 
+ static void
+ _gdm_display_set_is_local (GdmDisplay     *self,
+                            gboolean        is_local)
+ {
+         GdmDisplayPrivate *priv;
+ 
+         priv = gdm_display_get_instance_private (self);
+         g_debug ("GdmDisplay: local: %s", is_local? "yes" : "no");
+         priv->is_local = is_local;
+ }
+ 
+ static void
+ _gdm_display_set_session_registered (GdmDisplay     *self,
+                                      gboolean        registered)
+ {
+         GdmDisplayPrivate *priv;
+ 
+         priv = gdm_display_get_instance_private (self);
+         g_debug ("GdmDisplay: session registered: %s", registered? "yes" : "no");
+         priv->session_registered = registered;
+ }
+ 
++static void
++_gdm_display_set_shutting_down (GdmDisplay     *self,
++                                gboolean        shutting_down)
++{
++        GdmDisplayPrivate *priv;
++
++        priv = gdm_display_get_instance_private (self);
++        priv->shutting_down = shutting_down;
++}
++
+ static void
+ _gdm_display_set_launch_environment (GdmDisplay           *self,
+                                      GdmLaunchEnvironment *launch_environment)
+ {
+         GdmDisplayPrivate *priv;
+ 
+         priv = gdm_display_get_instance_private (self);
+ 
+         g_clear_object (&priv->launch_environment);
+ 
+         priv->launch_environment = g_object_ref (launch_environment);
+ }
+ 
+ static void
+ _gdm_display_set_is_initial (GdmDisplay     *self,
+                              gboolean        initial)
+ {
+         GdmDisplayPrivate *priv;
+ 
+         priv = gdm_display_get_instance_private (self);
+         g_debug ("GdmDisplay: initial: %s", initial? "yes" : "no");
+         priv->is_initial = initial;
+ }
+ 
+ static void
+ _gdm_display_set_allow_timed_login (GdmDisplay     *self,
+                                     gboolean        allow_timed_login)
+ {
+         GdmDisplayPrivate *priv;
+ 
+@@ -962,60 +974,63 @@ gdm_display_set_property (GObject        *object,
+         case PROP_REMOTE_HOSTNAME:
+                 _gdm_display_set_remote_hostname (self, g_value_get_string (value));
+                 break;
+         case PROP_X11_DISPLAY_NUMBER:
+                 _gdm_display_set_x11_display_number (self, g_value_get_int (value));
+                 break;
+         case PROP_X11_DISPLAY_NAME:
+                 _gdm_display_set_x11_display_name (self, g_value_get_string (value));
+                 break;
+         case PROP_X11_COOKIE:
+                 _gdm_display_set_x11_cookie (self, g_value_get_string (value));
+                 break;
+         case PROP_IS_LOCAL:
+                 _gdm_display_set_is_local (self, g_value_get_boolean (value));
+                 break;
+         case PROP_ALLOW_TIMED_LOGIN:
+                 _gdm_display_set_allow_timed_login (self, g_value_get_boolean (value));
+                 break;
+         case PROP_LAUNCH_ENVIRONMENT:
+                 _gdm_display_set_launch_environment (self, g_value_get_object (value));
+                 break;
+         case PROP_IS_INITIAL:
+                 _gdm_display_set_is_initial (self, g_value_get_boolean (value));
+                 break;
+         case PROP_SESSION_REGISTERED:
+                 _gdm_display_set_session_registered (self, g_value_get_boolean (value));
+                 break;
+         case PROP_SUPPORTED_SESSION_TYPES:
+                 _gdm_display_set_supported_session_types (self, g_value_get_boxed (value));
+                 break;
++        case PROP_SHUTTING_DOWN:
++                _gdm_display_set_shutting_down (self, g_value_get_boolean (value));
++                break;
+         default:
+                 G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+                 break;
+         }
+ }
+ 
+ static void
+ gdm_display_get_property (GObject        *object,
+                           guint           prop_id,
+                           GValue         *value,
+                           GParamSpec     *pspec)
+ {
+         GdmDisplay *self;
+         GdmDisplayPrivate *priv;
+ 
+         self = GDM_DISPLAY (object);
+         priv = gdm_display_get_instance_private (self);
+ 
+         switch (prop_id) {
+         case PROP_ID:
+                 g_value_set_string (value, priv->id);
+                 break;
+         case PROP_STATUS:
+                 g_value_set_int (value, priv->status);
+                 break;
+         case PROP_SEAT_ID:
+                 g_value_set_string (value, priv->seat_id);
+                 break;
+         case PROP_SESSION_ID:
+                 g_value_set_string (value, priv->session_id);
+@@ -1043,60 +1058,63 @@ gdm_display_get_property (GObject        *object,
+                                      priv->access_file?
+                                      gdm_display_access_file_get_path (priv->access_file) : NULL);
+                 break;
+         case PROP_IS_LOCAL:
+                 g_value_set_boolean (value, priv->is_local);
+                 break;
+         case PROP_IS_CONNECTED:
+                 g_value_set_boolean (value, priv->xcb_connection != NULL);
+                 break;
+         case PROP_LAUNCH_ENVIRONMENT:
+                 g_value_set_object (value, priv->launch_environment);
+                 break;
+         case PROP_IS_INITIAL:
+                 g_value_set_boolean (value, priv->is_initial);
+                 break;
+         case PROP_HAVE_EXISTING_USER_ACCOUNTS:
+                 g_value_set_boolean (value, priv->have_existing_user_accounts);
+                 break;
+         case PROP_DOING_INITIAL_SETUP:
+                 g_value_set_boolean (value, priv->doing_initial_setup);
+                 break;
+         case PROP_SESSION_REGISTERED:
+                 g_value_set_boolean (value, priv->session_registered);
+                 break;
+         case PROP_ALLOW_TIMED_LOGIN:
+                 g_value_set_boolean (value, priv->allow_timed_login);
+                 break;
+         case PROP_SUPPORTED_SESSION_TYPES:
+                 g_value_set_boxed (value, priv->supported_session_types);
+                 break;
++        case PROP_SHUTTING_DOWN:
++                g_value_set_boolean (value, priv->shutting_down);
++                break;
+         default:
+                 G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+                 break;
+         }
+ }
+ 
+ static gboolean
+ handle_get_id (GdmDBusDisplay        *skeleton,
+                GDBusMethodInvocation *invocation,
+                GdmDisplay            *self)
+ {
+         char *id;
+ 
+         gdm_display_get_id (self, &id, NULL);
+ 
+         gdm_dbus_display_complete_get_id (skeleton, invocation, id);
+ 
+         g_free (id);
+         return TRUE;
+ }
+ 
+ static gboolean
+ handle_get_remote_hostname (GdmDBusDisplay        *skeleton,
+                             GDBusMethodInvocation *invocation,
+                             GdmDisplay            *self)
+ {
+         char *hostname;
+ 
+         gdm_display_get_remote_hostname (self, &hostname, NULL);
+ 
+@@ -1397,60 +1415,68 @@ gdm_display_class_init (GdmDisplayClass *klass)
+                                          g_param_spec_boolean ("session-registered",
+                                                                NULL,
+                                                                NULL,
+                                                                FALSE,
+                                                                G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+ 
+         g_object_class_install_property (object_class,
+                                          PROP_LAUNCH_ENVIRONMENT,
+                                          g_param_spec_object ("launch-environment",
+                                                               NULL,
+                                                               NULL,
+                                                               GDM_TYPE_LAUNCH_ENVIRONMENT,
+                                                               G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+         g_object_class_install_property (object_class,
+                                          PROP_STATUS,
+                                          g_param_spec_int ("status",
+                                                            "status",
+                                                            "status",
+                                                            -1,
+                                                            G_MAXINT,
+                                                            GDM_DISPLAY_UNMANAGED,
+                                                            G_PARAM_READWRITE | G_PARAM_CONSTRUCT | G_PARAM_STATIC_STRINGS));
+ 
+         g_object_class_install_property (object_class,
+                                          PROP_SUPPORTED_SESSION_TYPES,
+                                          g_param_spec_boxed ("supported-session-types",
+                                                              "supported session types",
+                                                              "supported session types",
+                                                              G_TYPE_STRV,
+                                                              G_PARAM_READWRITE | G_PARAM_CONSTRUCT | G_PARAM_STATIC_STRINGS));
++
++        g_object_class_install_property (object_class,
++                                         PROP_SHUTTING_DOWN,
++                                         g_param_spec_boolean ("shutting-down",
++                                                               NULL,
++                                                               NULL,
++                                                               FALSE,
++                                                               G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+ }
+ 
+ static void
+ gdm_display_init (GdmDisplay *self)
+ {
+         GdmDisplayPrivate *priv;
+ 
+         priv = gdm_display_get_instance_private (self);
+ 
+         priv->creation_time = time (NULL);
+ }
+ 
+ static void
+ gdm_display_finalize (GObject *object)
+ {
+         GdmDisplay *self;
+         GdmDisplayPrivate *priv;
+ 
+         g_return_if_fail (object != NULL);
+         g_return_if_fail (GDM_IS_DISPLAY (object));
+ 
+         self = GDM_DISPLAY (object);
+         priv = gdm_display_get_instance_private (self);
+ 
+         g_return_if_fail (priv != NULL);
+ 
+         g_debug ("GdmDisplay: Finalizing display: %s", priv->id);
+         g_free (priv->id);
+         g_free (priv->seat_id);
+         g_free (priv->session_class);
+diff --git a/daemon/gdm-manager.c b/daemon/gdm-manager.c
+index c70248f3..05851001 100644
+--- a/daemon/gdm-manager.c
++++ b/daemon/gdm-manager.c
+@@ -2759,117 +2759,120 @@ gdm_manager_init (GdmManager *manager)
+                                                                                NULL,
+                                                                                (GDestroyNotify)
+                                                                                g_object_unref);
+         manager->priv->transient_sessions = g_hash_table_new_full (NULL,
+                                                                    NULL,
+                                                                    (GDestroyNotify)
+                                                                    NULL,
+                                                                    (GDestroyNotify)
+                                                                    g_object_unref);
+         g_signal_connect (G_OBJECT (manager->priv->display_store),
+                           "display-added",
+                           G_CALLBACK (on_display_added),
+                           manager);
+ 
+         g_signal_connect (G_OBJECT (manager->priv->display_store),
+                           "display-removed",
+                           G_CALLBACK (on_display_removed),
+                           manager);
+ }
+ 
+ static void
+ unexport_display (const char *id,
+                   GdmDisplay *display,
+                   GdmManager *manager)
+ {
+         if (!g_dbus_connection_is_closed (manager->priv->connection))
+                 g_dbus_object_manager_server_unexport (manager->priv->object_manager, id);
+ }
+ 
+ static void
+-finish_display (const char *id,
+-                GdmDisplay *display,
+-                GdmManager *manager)
++shut_down_display (const char *id,
++                   GdmDisplay *display,
++                   GdmManager *manager)
+ {
+         gdm_display_stop_greeter_session (display);
++
++        g_object_set (G_OBJECT (display), "shutting-down", TRUE, NULL);
++
+         if (gdm_display_get_status (display) == GDM_DISPLAY_MANAGED)
+                 gdm_display_unmanage (display);
+         gdm_display_finish (display);
+ }
+ 
+ static void
+ gdm_manager_dispose (GObject *object)
+ {
+         GdmManager *manager;
+ 
+         g_return_if_fail (object != NULL);
+         g_return_if_fail (GDM_IS_MANAGER (object));
+ 
+         manager = GDM_MANAGER (object);
+ 
+         g_return_if_fail (manager->priv != NULL);
+ 
+         gdm_manager_stop (manager);
+ 
+         g_clear_weak_pointer (&manager->priv->automatic_login_display);
+ 
+ #ifdef HAVE_LIBXDMCP
+         g_clear_object (&manager->priv->xdmcp_factory);
+ #endif
+         g_clear_object (&manager->priv->local_factory);
+         g_clear_pointer (&manager->priv->open_reauthentication_requests,
+                          g_hash_table_unref);
+         g_clear_pointer (&manager->priv->transient_sessions,
+                          g_hash_table_unref);
+ 
+         g_list_foreach (manager->priv->user_sessions,
+                         (GFunc) gdm_session_close,
+                         NULL);
+         g_list_free_full (manager->priv->user_sessions, (GDestroyNotify) g_object_unref);
+         manager->priv->user_sessions = NULL;
+ 
+         g_signal_handlers_disconnect_by_func (G_OBJECT (manager->priv->display_store),
+                                               G_CALLBACK (on_display_added),
+                                               manager);
+         g_signal_handlers_disconnect_by_func (G_OBJECT (manager->priv->display_store),
+                                               G_CALLBACK (on_display_removed),
+                                               manager);
+ 
+         if (!g_dbus_connection_is_closed (manager->priv->connection)) {
+                 gdm_display_store_foreach (manager->priv->display_store,
+                                            (GdmDisplayStoreFunc)unexport_display,
+                                            manager);
+                 g_dbus_interface_skeleton_unexport (G_DBUS_INTERFACE_SKELETON (manager));
+         }
+ 
+         gdm_display_store_foreach (manager->priv->display_store,
+-                                   (GdmDisplayStoreFunc) finish_display,
++                                   (GdmDisplayStoreFunc) shut_down_display,
+                                    manager);
+ 
+         gdm_display_store_clear (manager->priv->display_store);
+ 
+         g_dbus_object_manager_server_set_connection (manager->priv->object_manager, NULL);
+ 
+         g_clear_object (&manager->priv->connection);
+         g_clear_object (&manager->priv->object_manager);
+         g_clear_object (&manager->priv->display_store);
+ 
+         G_OBJECT_CLASS (gdm_manager_parent_class)->dispose (object);
+ }
+ 
+ GdmManager *
+ gdm_manager_new (void)
+ {
+         if (manager_object != NULL) {
+                 g_object_ref (manager_object);
+         } else {
+                 gboolean res;
+ 
+                 manager_object = g_object_new (GDM_TYPE_MANAGER, NULL);
+                 g_object_add_weak_pointer (manager_object,
+                                            (gpointer *) &manager_object);
+                 res = register_manager (manager_object);
+                 if (! res) {
+                         g_object_unref (manager_object);
+                         return NULL;
+                 }
+         }
+-- 
+2.37.0.rc1
+

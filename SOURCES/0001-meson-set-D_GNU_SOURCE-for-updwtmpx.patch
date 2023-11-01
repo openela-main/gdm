@@ -1,0 +1,81 @@
+From 5a2d5dbdf8c6f6d3c896082a5a07b4292f5fb410 Mon Sep 17 00:00:00 2001
+From: Sam James <sam@gentoo.org>
+Date: Tue, 5 Jul 2022 01:47:35 +0100
+Subject: [PATCH 1/2] meson: set -D_GNU_SOURCE for updwtmpx
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Without setting GNU_SOURCE, we end up getting:
+```
+../gdm-42.0/daemon/gdm-session-record.c:200:9: error: implicit declaration of function ‘updwtmpx’; did you mean ‘updwtmp’? [-Werror=implicit-function-declaration]
+updwtmpx (GDM_NEW_SESSION_RECORDS_FILE, &session_record);
+```
+
+This ended up exposing a bug in updwtmp(3) (which is now fixed
+thanks to the man-pages maintainers!) as it didn't mention that updwtmpx
+is a GNU extension (and hence needs GNU_SOURCE in order to be available).
+
+Alternatively, we could just #define _GNU_SOURCE in gdm-session-record.c
+for updwtmpx.
+
+Bug: https://bugzilla.kernel.org/show_bug.cgi?id=216168
+---
+ meson.build | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/meson.build b/meson.build
+index 8328dd97..4a286f97 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1,44 +1,47 @@
+ project('gdm', 'c',
+   version: '40.0',
+   license: 'GPL2+',
+   meson_version: '>= 0.50',
+ )
+ 
+ # Modules
+ gnome = import('gnome')
+ pkgconfig = import('pkgconfig')
+ i18n = import('i18n')
+ 
+ # Compiler
+ cc = meson.get_compiler('c')
+ 
++# Use GNU extensions if available
++add_project_arguments('-D_GNU_SOURCE', language: 'c')
++
+ # Options
+ gdm_prefix = get_option('prefix')
+ 
+ gdmconfdir = (get_option('sysconfsubdir') == '')? gdm_prefix / get_option('sysconfdir') : gdm_prefix / get_option('sysconfdir') / get_option('sysconfsubdir')
+ dmconfdir = (get_option('dmconfdir') != '')? get_option('dmconfdir') : gdm_prefix / get_option('sysconfdir') / 'dm'
+ udev_dir = get_option('udev-dir')
+ at_spi_registryd_dir = (get_option('at-spi-registryd-dir') != '')? get_option('at-spi-registryd-dir') : gdm_prefix / get_option('libexecdir')
+ lang_config_file = (get_option('lang-file') != '')? get_option('lang-file') : gdm_prefix / get_option('sysconfdir') / 'locale.conf'
+ pam_mod_dir = (get_option('pam-mod-dir') != '')? get_option('pam-mod-dir') : gdm_prefix / get_option('libdir') / 'security'
+ dbus_sys_dir = (get_option('dbus-sys') != '')? get_option('dbus-sys') : get_option('sysconfdir') / 'dbus-1' / 'system.d'
+ gdm_defaults_conf = (get_option('defaults-conf') != '')? get_option('defaults-conf') : gdm_prefix / get_option('datadir') / 'gdm' / 'defaults.conf'
+ gdm_custom_conf = (get_option('custom-conf') != '')? get_option('custom-conf') : gdmconfdir / 'custom.conf'
+ gnome_settings_daemon_dir = (get_option('gnome-settings-daemon-dir') != '')? get_option('gnome-settings-daemon-dir') : gdm_prefix / get_option('libexecdir')
+ gdm_run_dir = (get_option('run-dir') != '')? get_option('run-dir') : gdm_prefix / get_option('localstatedir') / 'run' / 'gdm'
+ gdm_runtime_conf = (get_option('runtime-conf') != '')? get_option('runtime-conf') : gdm_run_dir / 'custom.conf'
+ gdm_pid_file = (get_option('pid-file') != '')? get_option('pid-file') : gdm_run_dir / 'gdm.pid'
+ ran_once_marker_dir = (get_option('ran-once-marker-dir') != '')? get_option('ran-once-marker-dir') : gdm_run_dir
+ working_dir = (get_option('working-dir') != '')? get_option('working-dir') : gdm_prefix / get_option('localstatedir') / 'lib' / 'gdm'
+ gdm_xauth_dir = (get_option('xauth-dir') != '')? get_option('xauth-dir') : gdm_run_dir
+ gdm_screenshot_dir = (get_option('screenshot-dir') != '')? get_option('screenshot-dir') : gdm_run_dir / 'greeter'
+ 
+ # Common variables
+ config_h_dir = include_directories('.')
+ 
+ # Dependencies
+ udev_dep = dependency('udev')
+ 
+ glib_min_version = '2.56.0'
+ 
+ glib_dep = dependency('glib-2.0', version: '>=' + glib_min_version)
+-- 
+2.31.1
+

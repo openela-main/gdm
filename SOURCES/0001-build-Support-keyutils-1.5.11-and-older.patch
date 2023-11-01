@@ -1,0 +1,86 @@
+From 2fc7d94280a82e079129468d9b0db312725e5926 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Mon, 12 Dec 2022 15:37:38 -0500
+Subject: [PATCH 1/2] build: Support keyutils 1.5.11 and older
+
+keyutils didn't get a pkgconfig file until 1.6.
+
+This commit looks for the library directly if it can't find
+the pkgconfig file.
+---
+ meson.build | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/meson.build b/meson.build
+index 4a286f97..1a557e9a 100644
+--- a/meson.build
++++ b/meson.build
+@@ -26,60 +26,65 @@ lang_config_file = (get_option('lang-file') != '')? get_option('lang-file') : gd
+ pam_mod_dir = (get_option('pam-mod-dir') != '')? get_option('pam-mod-dir') : gdm_prefix / get_option('libdir') / 'security'
+ dbus_sys_dir = (get_option('dbus-sys') != '')? get_option('dbus-sys') : get_option('sysconfdir') / 'dbus-1' / 'system.d'
+ gdm_defaults_conf = (get_option('defaults-conf') != '')? get_option('defaults-conf') : gdm_prefix / get_option('datadir') / 'gdm' / 'defaults.conf'
+ gdm_custom_conf = (get_option('custom-conf') != '')? get_option('custom-conf') : gdmconfdir / 'custom.conf'
+ gnome_settings_daemon_dir = (get_option('gnome-settings-daemon-dir') != '')? get_option('gnome-settings-daemon-dir') : gdm_prefix / get_option('libexecdir')
+ gdm_run_dir = (get_option('run-dir') != '')? get_option('run-dir') : gdm_prefix / get_option('localstatedir') / 'run' / 'gdm'
+ gdm_runtime_conf = (get_option('runtime-conf') != '')? get_option('runtime-conf') : gdm_run_dir / 'custom.conf'
+ gdm_pid_file = (get_option('pid-file') != '')? get_option('pid-file') : gdm_run_dir / 'gdm.pid'
+ ran_once_marker_dir = (get_option('ran-once-marker-dir') != '')? get_option('ran-once-marker-dir') : gdm_run_dir
+ working_dir = (get_option('working-dir') != '')? get_option('working-dir') : gdm_prefix / get_option('localstatedir') / 'lib' / 'gdm'
+ gdm_xauth_dir = (get_option('xauth-dir') != '')? get_option('xauth-dir') : gdm_run_dir
+ gdm_screenshot_dir = (get_option('screenshot-dir') != '')? get_option('screenshot-dir') : gdm_run_dir / 'greeter'
+ 
+ # Common variables
+ config_h_dir = include_directories('.')
+ 
+ # Dependencies
+ udev_dep = dependency('udev')
+ 
+ glib_min_version = '2.56.0'
+ 
+ glib_dep = dependency('glib-2.0', version: '>=' + glib_min_version)
+ gobject_dep = dependency('gobject-2.0', version: '>=' + glib_min_version)
+ gio_dep = dependency('gio-2.0', version: '>=' + glib_min_version)
+ gio_unix_dep = dependency('gio-unix-2.0', version: '>=' + glib_min_version)
+ gtk_dep = dependency('gtk+-3.0', version: '>= 2.91.1')
+ libcanberra_gtk_dep = dependency('libcanberra-gtk3', version: '>= 0.4')
+ accountsservice_dep = dependency('accountsservice', version: '>= 0.6.35')
+ xcb_dep = dependency('xcb')
+ keyutils_dep = dependency('libkeyutils', required: false)
++
++if not keyutils_dep.found()
++  keyutils_dep = cc.find_library('libkeyutils')
++endif
++
+ libselinux_dep = dependency('libselinux', required: get_option('selinux'))
+ 
+ # udev
+ if udev_dir == ''
+   if udev_dep.found()
+     udev_prefix = udev_dep.get_pkgconfig_variable('udevdir')
+   else
+     udev_prefix = gdm_prefix / 'lib' / 'udev'
+   endif
+   udev_dir = udev_prefix / 'rules.d'
+ endif
+ 
+ # X11
+ x_deps = declare_dependency(
+   dependencies: [
+     dependency('x11'),
+     dependency('xau'),
+   ],
+ )
+ # Xserver 1.17 & later default to -nolisten and require -listen for remote access
+ xserver_deps = dependency('xorg-server', version : '>=1.17', required : false)
+ xserver_has_listen = xserver_deps.found()
+ find_x_server_script = find_program('build-aux/find-x-server.sh', native: true)
+ find_x_server_out = run_command(find_x_server_script).stdout().strip()
+ if find_x_server_out != ''
+   x_bin = find_x_server_out
+   x_bin_path_split = x_bin.split('/')
+   i = 0
+   x_path = '/'
+   foreach dir : x_bin_path_split
+-- 
+2.35.1
+
