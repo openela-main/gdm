@@ -1,0 +1,611 @@
+From de95917e0e9d142703a86f94961ef9fd4151739d Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Mon, 20 Aug 2018 14:30:59 -0400
+Subject: [PATCH 3/4] daemon: save os-release in accountsservice
+
+It can be useful to know what OS a user was running
+when they logged in (to detect upgrades).
+
+This commit saves that information in accountsservice.
+---
+ .../com.redhat.AccountsServiceUser.System.xml | 10 ++
+ daemon/gdm-session-settings.c                 | 98 +++++++++++++++++++
+ daemon/gdm-session.c                          |  4 +-
+ daemon/meson.build                            |  8 ++
+ 4 files changed, 118 insertions(+), 2 deletions(-)
+ create mode 100644 daemon/com.redhat.AccountsServiceUser.System.xml
+
+diff --git a/daemon/com.redhat.AccountsServiceUser.System.xml b/daemon/com.redhat.AccountsServiceUser.System.xml
+new file mode 100644
+index 00000000..67f5f302
+--- /dev/null
++++ b/daemon/com.redhat.AccountsServiceUser.System.xml
+@@ -0,0 +1,10 @@
++<node>
++  <interface name="com.redhat.AccountsServiceUser.System">
++
++    <annotation name="org.freedesktop.Accounts.VendorExtension" value="true"/>
++
++    <property name="id" type="s" access="readwrite"/>
++    <property name="version-id" type="s" access="readwrite"/>
++
++  </interface>
++</node>
+diff --git a/daemon/gdm-session-settings.c b/daemon/gdm-session-settings.c
+index f2b1addd..a4b7f1a6 100644
+--- a/daemon/gdm-session-settings.c
++++ b/daemon/gdm-session-settings.c
+@@ -1,70 +1,77 @@
+ /* gdm-session-settings.c - Loads session and language from ~/.dmrc
+  *
+  * Copyright (C) 2008 Red Hat, Inc.
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+  * the Free Software Foundation; either version 2, or (at your option)
+  * any later version.
+  *
+  * This program is distributed in the hope that it will be useful,
+  * but WITHOUT ANY WARRANTY; without even the implied warranty of
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  * GNU General Public License for more details.
+  *
+  * You should have received a copy of the GNU General Public License
+  * along with this program; if not, write to the Free Software
+  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+  * 02110-1301, USA.
+  *
+  * Written by: Ray Strode <rstrode@redhat.com>
+  */
+ #include "config.h"
+ #include "gdm-session-settings.h"
++#include "gdm-common.h"
++
++#include "com.redhat.AccountsServiceUser.System.h"
+ 
+ #include <errno.h>
+ #include <pwd.h>
+ #include <string.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+ 
+ #include <glib.h>
+ #include <glib-object.h>
+ #include <glib/gi18n.h>
+ 
+ #include <act/act-user-manager.h>
+ 
+ struct _GdmSessionSettingsPrivate
+ {
+         ActUserManager *user_manager;
+         ActUser *user;
++
++        /* used for retrieving the last OS user logged in with */
++        GdmAccountsServiceUserSystem *user_system_proxy;
++
+         char *session_name;
+         char *session_type;
+         char *language_name;
+ };
+ 
+ static void gdm_session_settings_finalize (GObject *object);
+ static void gdm_session_settings_class_install_properties (GdmSessionSettingsClass *
+                                               settings_class);
+ 
+ static void gdm_session_settings_set_property (GObject      *object,
+                                               guint         prop_id,
+                                               const GValue *value,
+                                               GParamSpec   *pspec);
+ static void gdm_session_settings_get_property (GObject      *object,
+                                               guint         prop_id,
+                                               GValue       *value,
+                                               GParamSpec   *pspec);
+ 
+ enum {
+         PROP_0 = 0,
+         PROP_SESSION_NAME,
+         PROP_SESSION_TYPE,
+         PROP_LANGUAGE_NAME,
+         PROP_IS_LOADED
+ };
+ 
+ G_DEFINE_TYPE_WITH_PRIVATE (GdmSessionSettings,
+                             gdm_session_settings,
+                             G_TYPE_OBJECT)
+ 
+@@ -107,60 +114,62 @@ gdm_session_settings_class_install_properties (GdmSessionSettingsClass *settings
+         g_object_class_install_property (object_class, PROP_LANGUAGE_NAME, param_spec);
+ 
+         param_spec = g_param_spec_boolean ("is-loaded", NULL, NULL,
+                                            FALSE, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+         g_object_class_install_property (object_class, PROP_IS_LOADED, param_spec);
+ }
+ 
+ static void
+ gdm_session_settings_init (GdmSessionSettings *settings)
+ {
+         settings->priv = G_TYPE_INSTANCE_GET_PRIVATE (settings,
+                                                      GDM_TYPE_SESSION_SETTINGS,
+                                                      GdmSessionSettingsPrivate);
+ 
+         settings->priv->user_manager = act_user_manager_get_default ();
+ 
+ }
+ 
+ static void
+ gdm_session_settings_finalize (GObject *object)
+ {
+         GdmSessionSettings *settings;
+         GObjectClass *parent_class;
+ 
+         settings = GDM_SESSION_SETTINGS (object);
+ 
+         if (settings->priv->user != NULL) {
+                 g_object_unref (settings->priv->user);
+         }
+ 
++        g_clear_object (&settings->priv->user_system_proxy);
++
+         g_free (settings->priv->session_name);
+         g_free (settings->priv->language_name);
+ 
+         parent_class = G_OBJECT_CLASS (gdm_session_settings_parent_class);
+ 
+         if (parent_class->finalize != NULL) {
+                 parent_class->finalize (object);
+         }
+ }
+ 
+ void
+ gdm_session_settings_set_language_name (GdmSessionSettings *settings,
+                                         const char         *language_name)
+ {
+         g_return_if_fail (GDM_IS_SESSION_SETTINGS (settings));
+ 
+         if (settings->priv->language_name == NULL ||
+             strcmp (settings->priv->language_name, language_name) != 0) {
+                 settings->priv->language_name = g_strdup (language_name);
+                 g_object_notify (G_OBJECT (settings), "language-name");
+         }
+ }
+ 
+ void
+ gdm_session_settings_set_session_name (GdmSessionSettings *settings,
+                                        const char         *session_name)
+ {
+         g_return_if_fail (GDM_IS_SESSION_SETTINGS (settings));
+ 
+         if (settings->priv->session_name == NULL ||
+@@ -261,69 +270,86 @@ gdm_session_settings_get_property (GObject    *object,
+ 
+                 default:
+                         G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+     }
+ }
+ 
+ GdmSessionSettings *
+ gdm_session_settings_new (void)
+ {
+         GdmSessionSettings *settings;
+ 
+         settings = g_object_new (GDM_TYPE_SESSION_SETTINGS,
+                                  NULL);
+ 
+         return settings;
+ }
+ 
+ gboolean
+ gdm_session_settings_is_loaded (GdmSessionSettings  *settings)
+ {
+         if (settings->priv->user == NULL) {
+                 return FALSE;
+         }
+ 
+         return act_user_is_loaded (settings->priv->user);
+ }
+ 
+ static void
+ load_settings_from_user (GdmSessionSettings *settings)
+ {
++        const char *object_path;
+         const char *session_name;
+         const char *session_type;
+         const char *language_name;
+ 
+         if (!act_user_is_loaded (settings->priv->user)) {
+                 g_warning ("GdmSessionSettings: trying to load user settings from unloaded user");
+                 return;
+         }
+ 
++        object_path = act_user_get_object_path (settings->priv->user);
++
++        if (object_path != NULL) {
++                g_autoptr (GError) error = NULL;
++                settings->priv->user_system_proxy = gdm_accounts_service_user_system_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
++                                                                                                             G_DBUS_PROXY_FLAGS_NONE,
++                                                                                                             "org.freedesktop.Accounts",
++                                                                                                             object_path,
++                                                                                                             NULL,
++                                                                                                             &error);
++                if (error != NULL) {
++                        g_debug ("GdmSessionSettings: couldn't retrieve user system proxy from accountsservice: %s",
++                                 error->message);
++                }
++        }
++
+ 
+ 
+ 
+ 
+         session_type = act_user_get_session_type (settings->priv->user);
+         session_name = act_user_get_session (settings->priv->user);
+ 
+         g_debug ("GdmSessionSettings: saved session is %s (type %s)", session_name, session_type);
+ 
+         if (session_type != NULL && session_type[0] != '\0') {
+                 gdm_session_settings_set_session_type (settings, session_type);
+         }
+ 
+         if (session_name != NULL && session_name[0] != '\0') {
+                 gdm_session_settings_set_session_name (settings, session_name);
+         }
+ 
+         language_name = act_user_get_language (settings->priv->user);
+ 
+         g_debug ("GdmSessionSettings: saved language is %s", language_name);
+         if (language_name != NULL && language_name[0] != '\0') {
+                 gdm_session_settings_set_language_name (settings, language_name);
+         }
+ 
+ out:
+         g_object_notify (G_OBJECT (settings), "is-loaded");
+ }
+ 
+ static void
+ on_user_is_loaded_changed (ActUser            *user,
+@@ -349,64 +375,136 @@ gdm_session_settings_load (GdmSessionSettings  *settings,
+         g_return_val_if_fail (!gdm_session_settings_is_loaded (settings), FALSE);
+ 
+         if (settings->priv->user != NULL) {
+                 old_user = settings->priv->user;
+ 
+                 g_signal_handlers_disconnect_by_func (G_OBJECT (settings->priv->user),
+                                                       G_CALLBACK (on_user_is_loaded_changed),
+                                                       settings);
+         } else {
+                 old_user = NULL;
+         }
+ 
+         settings->priv->user = act_user_manager_get_user (settings->priv->user_manager,
+                                                           username);
+ 
+         g_clear_object (&old_user);
+ 
+         if (!act_user_is_loaded (settings->priv->user)) {
+                 g_signal_connect (settings->priv->user,
+                                   "notify::is-loaded",
+                                   G_CALLBACK (on_user_is_loaded_changed),
+                                   settings);
+                 return FALSE;
+         }
+ 
+         load_settings_from_user (settings);
+ 
+         return TRUE;
+ }
+ 
++static void
++save_os_release (GdmSessionSettings *settings,
++                 ActUser            *user)
++{
++        g_autoptr(GFile) file = NULL;
++        g_autoptr(GError) error = NULL;
++        g_autofree char *contents = NULL;
++        g_auto(GStrv) lines = NULL;
++        size_t i;
++
++        if (settings->priv->user_system_proxy == NULL) {
++                g_debug ("GdmSessionSettings: not saving OS version to user account because accountsservice doesn't support it");
++                return;
++        }
++
++        file = g_file_new_for_path ("/etc/os-release");
++
++        if (!g_file_load_contents (file, NULL, &contents, NULL, NULL, &error)) {
++                g_debug ("GdmSessionSettings: couldn't load /etc/os-release: %s", error->message);
++                return;
++        }
++
++        lines = g_strsplit (contents, "\n", -1);
++        for (i = 0; lines[i] != NULL; i++) {
++                char *p, *name, *name_end, *value, *value_end;
++
++                p = lines[i];
++
++                while (g_ascii_isspace (*p))
++                        p++;
++
++                if (*p == '#' || *p == '\0')
++                        continue;
++                name = p;
++                while (gdm_shell_var_is_valid_char (*p, p == name))
++                        p++;
++                name_end = p;
++                while (g_ascii_isspace (*p))
++                        p++;
++                if (name == name_end || *p != '=') {
++                        continue;
++                }
++                *name_end = '\0';
++
++                p++;
++
++                while (g_ascii_isspace (*p))
++                        p++;
++
++                value = p;
++                value_end = value + strlen(value) - 1;
++
++                if (value != value_end && *value == '"' && *value_end == '"') {
++                        value++;
++                        *value_end = '\0';
++                }
++
++                if (strcmp (name, "ID") == 0) {
++                        gdm_accounts_service_user_system_set_id (settings->priv->user_system_proxy,
++                                                                 value);
++                        g_debug ("GdmSessionSettings: setting system OS for user to '%s'", value);
++                } else if (strcmp (name, "VERSION_ID") == 0) {
++                        gdm_accounts_service_user_system_set_version_id (settings->priv->user_system_proxy,
++                                                                         value);
++                        g_debug ("GdmSessionSettings: setting system OS version for user to '%s'", value);
++                }
++        }
++}
++
+ gboolean
+ gdm_session_settings_save (GdmSessionSettings  *settings,
+                            const char          *username)
+ {
+         ActUser  *user;
+ 
+         g_return_val_if_fail (GDM_IS_SESSION_SETTINGS (settings), FALSE);
+         g_return_val_if_fail (username != NULL, FALSE);
+         g_return_val_if_fail (gdm_session_settings_is_loaded (settings), FALSE);
+ 
+         user = act_user_manager_get_user (settings->priv->user_manager,
+                                           username);
+ 
+ 
+         if (!act_user_is_loaded (user)) {
+                 g_object_unref (user);
+                 return FALSE;
+         }
+ 
+         if (settings->priv->session_name != NULL) {
+                 act_user_set_session (user, settings->priv->session_name);
+         }
+ 
+         if (settings->priv->session_type != NULL) {
+                 act_user_set_session_type (user, settings->priv->session_type);
+         }
+ 
+         if (settings->priv->language_name != NULL) {
+                 act_user_set_language (user, settings->priv->language_name);
+         }
++
++        save_os_release (settings, user);
++
+         g_object_unref (user);
+ 
+         return TRUE;
+ }
+diff --git a/daemon/gdm-session.c b/daemon/gdm-session.c
+index f4d0bef9..d1e2c301 100644
+--- a/daemon/gdm-session.c
++++ b/daemon/gdm-session.c
+@@ -351,72 +351,72 @@ supports_session_type (GdmSession *self,
+         if (session_type == NULL)
+                 return TRUE;
+ 
+         return g_strv_contains ((const char * const *) self->supported_session_types,
+                                 session_type);
+ }
+ 
+ static char **
+ get_system_session_dirs (GdmSession *self,
+                          const char *type)
+ {
+         GArray *search_array = NULL;
+         char **search_dirs;
+         int i, j;
+         const gchar * const *system_data_dirs = g_get_system_data_dirs ();
+ 
+         static const char *x_search_dirs[] = {
+                 "/etc/X11/sessions/",
+                 DMCONFDIR "/Sessions/",
+                 DATADIR "/gdm/BuiltInSessions/",
+                 DATADIR "/xsessions/",
+         };
+ 
+         static const char *wayland_search_dir = DATADIR "/wayland-sessions/";
+ 
+         search_array = g_array_new (TRUE, TRUE, sizeof (char *));
+ 
+         for (j = 0; self->supported_session_types[j] != NULL; j++) {
+                 const char *supported_type = self->supported_session_types[j];
+ 
+-                if (g_str_equal (supported_type, "x11") ||
++                if (g_str_equal (supported_type, "x11") &&
+                     (type == NULL || g_str_equal (type, supported_type))) {
+                         for (i = 0; system_data_dirs[i]; i++) {
+                                 gchar *dir = g_build_filename (system_data_dirs[i], "xsessions", NULL);
+                                 g_array_append_val (search_array, dir);
+                         }
+ 
+                         g_array_append_vals (search_array, x_search_dirs, G_N_ELEMENTS (x_search_dirs));
+                 }
+ 
+ #ifdef ENABLE_WAYLAND_SUPPORT
+-                if (g_str_equal (supported_type, "wayland") ||
++                if (g_str_equal (supported_type, "wayland") &&
+                     (type == NULL || g_str_equal (type, supported_type))) {
+                         for (i = 0; system_data_dirs[i]; i++) {
+                                 gchar *dir = g_build_filename (system_data_dirs[i], "wayland-sessions", NULL);
+                                 g_array_append_val (search_array, dir);
+                         }
+ 
+                         g_array_append_val (search_array, wayland_search_dir);
+                 }
+ #endif
+         }
+ 
+         search_dirs = g_strdupv ((char **) search_array->data);
+ 
+         g_array_free (search_array, TRUE);
+ 
+         return search_dirs;
+ }
+ 
+ static gboolean
+ is_prog_in_path (const char *prog)
+ {
+         char    *f;
+         gboolean ret;
+ 
+         f = g_find_program_in_path (prog);
+         ret = (f != NULL);
+         g_free (f);
+         return ret;
+ }
+ 
+diff --git a/daemon/meson.build b/daemon/meson.build
+index 2e61b644..71c65039 100644
+--- a/daemon/meson.build
++++ b/daemon/meson.build
+@@ -15,114 +15,122 @@ local_display_dbus_gen = gnome.gdbus_codegen('gdm-local-display-glue',
+   'gdm-local-display.xml',
+   namespace: 'GdmDBus',
+   interface_prefix: 'org.gnome.DisplayManager',
+   autocleanup: 'all',
+ )
+ local_display_factory_dbus_gen = gnome.gdbus_codegen('gdm-local-display-factory-glue',
+   'gdm-local-display-factory.xml',
+   namespace: 'GdmDBus',
+   interface_prefix: 'org.gnome.DisplayManager',
+   autocleanup: 'all',
+ )
+ manager_dbus_gen = gnome.gdbus_codegen('gdm-manager-glue',
+   'gdm-manager.xml',
+   namespace: 'GdmDBus',
+   interface_prefix: 'org.gnome.DisplayManager',
+   autocleanup: 'all',
+ )
+ session_dbus_gen = gnome.gdbus_codegen('gdm-session-glue',
+   'gdm-session.xml',
+   namespace: 'GdmDBus',
+   interface_prefix: 'org.gnome.DisplayManager',
+   autocleanup: 'all',
+ )
+ session_worker_dbus_gen = gnome.gdbus_codegen('gdm-session-worker-glue',
+   'gdm-session-worker.xml',
+   namespace: 'GdmDBus',
+   interface_prefix: 'org.gnome.DisplayManager',
+   autocleanup: 'all',
+ )
+ 
++accountsservice_system_user_dbus_gen = gnome.gdbus_codegen('com.redhat.AccountsServiceUser.System',
++  'com.redhat.AccountsServiceUser.System.xml',
++  namespace: 'Gdm',
++  interface_prefix: 'com.redhat',
++  autocleanup: 'all',
++)
++
+ gdm_session_enums = gnome.mkenums('gdm-session-enum-types',
+   h_template: 'gdm-session-enum-types.h.in',
+   c_template: 'gdm-session-enum-types.c.in',
+   sources: 'gdm-session.h',
+ )
+ gdm_session_worker_enums = gnome.mkenums('gdm-session-worker-enum-types',
+   h_template: 'gdm-session-worker-enum-types.h.in',
+   c_template: 'gdm-session-worker-enum-types.c.in',
+   sources: 'gdm-session-worker.h',
+ )
+ 
+ # Daemons deps
+ gdm_daemon_deps = [
+   libgdmcommon_dep,
+   accountsservice_dep,
+   gobject_dep,
+   gio_dep,
+   gio_unix_dep,
+   libpam_dep,
+   x_deps,
+   xcb_dep,
+ ]
+ 
+ if xdmcp_dep.found() and get_option('tcp-wrappers')
+   gdm_daemon_deps += libwrap_dep
+ endif
+ 
+ # test-session-client
+ test_session_client_src = [
+   'test-session-client.c',
+   session_dbus_gen,
+   manager_dbus_gen,
+ ]
+ 
+ test_session_client = executable('test-session-client',
+   test_session_client_src,
+   dependencies: gdm_daemon_deps,
+   include_directories: config_h_dir,
+ )
+ 
+ # Session worker
+ gdm_session_worker_src = [
+   'session-worker-main.c',
+   'gdm-session.c',
+   'gdm-session-settings.c',
+   'gdm-session-auditor.c',
+   'gdm-session-record.c',
+   'gdm-session-worker.c',
+   'gdm-session-worker-job.c',
+   'gdm-session-worker-common.c',
+   'gdm-dbus-util.c',
+   dbus_gen,
+   session_dbus_gen,
+   session_worker_dbus_gen,
++  accountsservice_system_user_dbus_gen,
+   gdm_session_enums,
+   gdm_session_worker_enums,
+ ]
+ 
+ gdm_session_worker_deps = [
+   gdm_daemon_deps,
+ ]
+ 
+ gdm_session_worker_includes = [
+   config_h_dir,
+ ]
+ 
+ if pam_extensions_supported
+   gdm_session_worker_src += '../pam-extensions/gdm-pam-extensions.h'
+   gdm_session_worker_includes += pam_extensions_inc
+ endif
+ 
+ if libaudit_dep.found()
+   gdm_session_worker_deps += libaudit_dep
+ 
+   gdm_session_worker_src += [
+     'gdm-session-linux-auditor.c',
+   ]
+ endif
+ 
+ if have_adt
+   gdm_session_worker_src += 'gdm-session-solaris-auditor.c'
+ endif
+ 
+ gdm_session_worker = executable('gdm-session-worker',
+-- 
+2.33.1
+

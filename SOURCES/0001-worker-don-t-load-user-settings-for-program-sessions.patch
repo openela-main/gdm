@@ -1,0 +1,565 @@
+From f0dce28fa02210caa445e96d9cbec1d150b79e80 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Wed, 15 Aug 2018 10:48:16 -0400
+Subject: [PATCH 1/4] worker: don't load user settings for program sessions
+
+We don't need or want the login greeter to access accountsservice
+for its session name
+---
+ daemon/gdm-session-worker.c | 37 ++++++++++++++++++++++++++-----------
+ 1 file changed, 26 insertions(+), 11 deletions(-)
+
+diff --git a/daemon/gdm-session-worker.c b/daemon/gdm-session-worker.c
+index 9b8e0d87..438348df 100644
+--- a/daemon/gdm-session-worker.c
++++ b/daemon/gdm-session-worker.c
+@@ -400,103 +400,108 @@ gdm_session_execute (const char *file,
+  */
+ static gboolean
+ gdm_session_worker_get_username (GdmSessionWorker  *worker,
+                                  char             **username)
+ {
+         gconstpointer item;
+ 
+         g_assert (worker->priv->pam_handle != NULL);
+ 
+         if (pam_get_item (worker->priv->pam_handle, PAM_USER, &item) == PAM_SUCCESS) {
+                 if (username != NULL) {
+                         *username = g_strdup ((char *) item);
+                         g_debug ("GdmSessionWorker: username is '%s'",
+                                  *username != NULL ? *username : "<unset>");
+                 }
+ 
+                 if (worker->priv->auditor != NULL) {
+                         gdm_session_auditor_set_username (worker->priv->auditor, (char *)item);
+                 }
+ 
+                 return TRUE;
+         }
+ 
+         return FALSE;
+ }
+ 
+ static void
+ attempt_to_load_user_settings (GdmSessionWorker *worker,
+                                const char       *username)
+ {
++        if (worker->priv->user_settings == NULL)
++                return;
++
++        if (gdm_session_settings_is_loaded (worker->priv->user_settings))
++                return;
++
+         g_debug ("GdmSessionWorker: attempting to load user settings");
+         gdm_session_settings_load (worker->priv->user_settings,
+                                    username);
+ }
+ 
+ static void
+ gdm_session_worker_update_username (GdmSessionWorker *worker)
+ {
+         char    *username;
+         gboolean res;
+ 
+         username = NULL;
+         res = gdm_session_worker_get_username (worker, &username);
+         if (res) {
+                 g_debug ("GdmSessionWorker: old-username='%s' new-username='%s'",
+                          worker->priv->username != NULL ? worker->priv->username : "<unset>",
+                          username != NULL ? username : "<unset>");
+ 
+ 
+                 gdm_session_auditor_set_username (worker->priv->auditor, worker->priv->username);
+ 
+                 if ((worker->priv->username == username) ||
+                     ((worker->priv->username != NULL) && (username != NULL) &&
+                      (strcmp (worker->priv->username, username) == 0)))
+                         goto out;
+ 
+                 g_debug ("GdmSessionWorker: setting username to '%s'", username);
+ 
+                 g_free (worker->priv->username);
+                 worker->priv->username = username;
+                 username = NULL;
+ 
+                 gdm_dbus_worker_emit_username_changed (GDM_DBUS_WORKER (worker),
+                                                        worker->priv->username);
+ 
+                 /* We have a new username to try. If we haven't been able to
+                  * read user settings up until now, then give it a go now
+                  * (see the comment in do_setup for rationale on why it's useful
+                  * to keep trying to read settings)
+                  */
+                 if (worker->priv->username != NULL &&
+-                    worker->priv->username[0] != '\0' &&
+-                    !gdm_session_settings_is_loaded (worker->priv->user_settings)) {
++                    worker->priv->username[0] != '\0') {
+                         attempt_to_load_user_settings (worker, worker->priv->username);
+                 }
+         }
+ 
+  out:
+         g_free (username);
+ }
+ 
+ static gboolean
+ gdm_session_worker_ask_question (GdmSessionWorker *worker,
+                                  const char       *question,
+                                  char            **answerp)
+ {
+         return gdm_dbus_worker_manager_call_info_query_sync (worker->priv->manager,
+                                                              worker->priv->service,
+                                                              question,
+                                                              answerp,
+                                                              NULL,
+                                                              NULL);
+ }
+ 
+ static gboolean
+ gdm_session_worker_ask_for_secret (GdmSessionWorker *worker,
+                                    const char       *question,
+                                    char            **answerp)
+ {
+         return gdm_dbus_worker_manager_call_secret_info_query_sync (worker->priv->manager,
+                                                                     worker->priv->service,
+                                                                     question,
+                                                                     answerp,
+@@ -2598,87 +2603,89 @@ gdm_session_worker_get_property (GObject    *object,
+                 g_value_set_boolean (value, self->priv->is_reauth_session);
+                 break;
+         case PROP_STATE:
+                 g_value_set_enum (value, self->priv->state);
+                 break;
+         default:
+                 G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+                 break;
+         }
+ }
+ 
+ static gboolean
+ gdm_session_worker_handle_set_environment_variable (GdmDBusWorker         *object,
+                                                     GDBusMethodInvocation *invocation,
+                                                     const char            *key,
+                                                     const char            *value)
+ {
+         GdmSessionWorker *worker = GDM_SESSION_WORKER (object);
+         gdm_session_worker_set_environment_variable (worker, key, value);
+         gdm_dbus_worker_complete_set_environment_variable (object, invocation);
+         return TRUE;
+ }
+ 
+ static gboolean
+ gdm_session_worker_handle_set_session_name (GdmDBusWorker         *object,
+                                             GDBusMethodInvocation *invocation,
+                                             const char            *session_name)
+ {
+         GdmSessionWorker *worker = GDM_SESSION_WORKER (object);
+         g_debug ("GdmSessionWorker: session name set to %s", session_name);
+-        gdm_session_settings_set_session_name (worker->priv->user_settings,
+-                                               session_name);
++        if (worker->priv->user_settings != NULL)
++                gdm_session_settings_set_session_name (worker->priv->user_settings,
++                                                       session_name);
+         gdm_dbus_worker_complete_set_session_name (object, invocation);
+         return TRUE;
+ }
+ 
+ static gboolean
+ gdm_session_worker_handle_set_session_display_mode (GdmDBusWorker         *object,
+                                                     GDBusMethodInvocation *invocation,
+                                                     const char            *str)
+ {
+         GdmSessionWorker *worker = GDM_SESSION_WORKER (object);
+         g_debug ("GdmSessionWorker: session display mode set to %s", str);
+         worker->priv->display_mode = gdm_session_display_mode_from_string (str);
+         gdm_dbus_worker_complete_set_session_display_mode (object, invocation);
+         return TRUE;
+ }
+ 
+ static gboolean
+ gdm_session_worker_handle_set_language_name (GdmDBusWorker         *object,
+                                              GDBusMethodInvocation *invocation,
+                                              const char            *language_name)
+ {
+         GdmSessionWorker *worker = GDM_SESSION_WORKER (object);
+         g_debug ("GdmSessionWorker: language name set to %s", language_name);
+-        gdm_session_settings_set_language_name (worker->priv->user_settings,
+-                                                language_name);
++        if (worker->priv->user_settings != NULL)
++                gdm_session_settings_set_language_name (worker->priv->user_settings,
++                                                        language_name);
+         gdm_dbus_worker_complete_set_language_name (object, invocation);
+         return TRUE;
+ }
+ 
+ static void
+ on_saved_language_name_read (GdmSessionWorker *worker)
+ {
+         char *language_name;
+ 
+         language_name = gdm_session_settings_get_language_name (worker->priv->user_settings);
+ 
+         g_debug ("GdmSessionWorker: Saved language is %s", language_name);
+         gdm_dbus_worker_emit_saved_language_name_read (GDM_DBUS_WORKER (worker),
+                                                        language_name);
+         g_free (language_name);
+ }
+ 
+ static void
+ on_saved_session_name_read (GdmSessionWorker *worker)
+ {
+         char *session_name;
+ 
+         session_name = gdm_session_settings_get_session_name (worker->priv->user_settings);
+ 
+         g_debug ("GdmSessionWorker: Saved session is %s", session_name);
+         gdm_dbus_worker_emit_saved_session_name_read (GDM_DBUS_WORKER (worker),
+                                                       session_name);
+         g_free (session_name);
+ }
+ 
+@@ -2756,110 +2763,113 @@ do_authorize (GdmSessionWorker *worker)
+                 g_dbus_method_invocation_take_error (worker->priv->pending_invocation, error);
+         }
+         worker->priv->pending_invocation = NULL;
+ }
+ 
+ static void
+ do_accredit (GdmSessionWorker *worker)
+ {
+         GError  *error;
+         gboolean res;
+ 
+         /* get kerberos tickets, setup group lists, etc
+          */
+         error = NULL;
+         res = gdm_session_worker_accredit_user (worker, &error);
+ 
+         if (res) {
+                 gdm_dbus_worker_complete_establish_credentials (GDM_DBUS_WORKER (worker), worker->priv->pending_invocation);
+         } else {
+                 g_dbus_method_invocation_take_error (worker->priv->pending_invocation, error);
+         }
+         worker->priv->pending_invocation = NULL;
+ }
+ 
+ static void
+ save_account_details_now (GdmSessionWorker *worker)
+ {
+         g_assert (worker->priv->state == GDM_SESSION_WORKER_STATE_ACCREDITED);
+ 
+         g_debug ("GdmSessionWorker: saving account details for user %s", worker->priv->username);
++
+         gdm_session_worker_set_state (worker, GDM_SESSION_WORKER_STATE_ACCOUNT_DETAILS_SAVED);
+-        if (!gdm_session_settings_save (worker->priv->user_settings,
+-                                        worker->priv->username)) {
+-                g_warning ("could not save session and language settings");
++        if (worker->priv->user_settings != NULL) {
++                if (!gdm_session_settings_save (worker->priv->user_settings,
++                                                worker->priv->username)) {
++                        g_warning ("could not save session and language settings");
++                }
+         }
+         queue_state_change (worker);
+ }
+ 
+ static void
+ on_settings_is_loaded_changed (GdmSessionSettings *user_settings,
+                                GParamSpec         *pspec,
+                                GdmSessionWorker   *worker)
+ {
+         if (!gdm_session_settings_is_loaded (worker->priv->user_settings)) {
+                 return;
+         }
+ 
+         /* These signal handlers should be disconnected after the loading,
+          * so that gdm_session_settings_set_* APIs don't cause the emitting
+          * of Saved*NameRead D-Bus signals any more.
+          */
+         g_signal_handlers_disconnect_by_func (worker->priv->user_settings,
+                                               G_CALLBACK (on_saved_session_name_read),
+                                               worker);
+ 
+         g_signal_handlers_disconnect_by_func (worker->priv->user_settings,
+                                               G_CALLBACK (on_saved_language_name_read),
+                                               worker);
+ 
+         if (worker->priv->state == GDM_SESSION_WORKER_STATE_NONE) {
+                 g_debug ("GdmSessionWorker: queuing setup for user: %s %s",
+                          worker->priv->username, worker->priv->display_device);
+                 queue_state_change (worker);
+         } else if (worker->priv->state == GDM_SESSION_WORKER_STATE_ACCREDITED) {
+                 save_account_details_now (worker);
+         } else {
+                 return;
+         }
+ 
+         g_signal_handlers_disconnect_by_func (G_OBJECT (worker->priv->user_settings),
+                                               G_CALLBACK (on_settings_is_loaded_changed),
+                                               worker);
+ }
+ 
+ static void
+ do_save_account_details_when_ready (GdmSessionWorker *worker)
+ {
+         g_assert (worker->priv->state == GDM_SESSION_WORKER_STATE_ACCREDITED);
+ 
+-        if (!gdm_session_settings_is_loaded (worker->priv->user_settings)) {
++        if (worker->priv->user_settings != NULL && !gdm_session_settings_is_loaded (worker->priv->user_settings)) {
+                 g_signal_connect (G_OBJECT (worker->priv->user_settings),
+                                   "notify::is-loaded",
+                                   G_CALLBACK (on_settings_is_loaded_changed),
+                                   worker);
+                 g_debug ("GdmSessionWorker: user %s, not fully loaded yet, will save account details later",
+                          worker->priv->username);
+                 gdm_session_settings_load (worker->priv->user_settings,
+                                            worker->priv->username);
+                 return;
+         }
+ 
+         save_account_details_now (worker);
+ }
+ 
+ static void
+ do_open_session (GdmSessionWorker *worker)
+ {
+         GError  *error;
+         gboolean res;
+ 
+         error = NULL;
+         res = gdm_session_worker_open_session (worker, &error);
+ 
+         if (res) {
+                 char *session_id = worker->priv->session_id;
+                 if (session_id == NULL) {
+                         session_id = "";
+                 }
+ 
+                 gdm_dbus_worker_complete_open (GDM_DBUS_WORKER (worker), worker->priv->pending_invocation, session_id);
+@@ -3103,155 +3113,161 @@ gdm_session_worker_handle_initialize (GdmDBusWorker         *object,
+                 if (g_strcmp0 (key, "service") == 0) {
+                         worker->priv->service = g_variant_dup_string (value, NULL);
+                 } else if (g_strcmp0 (key, "extensions") == 0) {
+                         worker->priv->extensions = filter_extensions (g_variant_get_strv (value, NULL));
+                 } else if (g_strcmp0 (key, "username") == 0) {
+                         worker->priv->username = g_variant_dup_string (value, NULL);
+                 } else if (g_strcmp0 (key, "is-program-session") == 0) {
+                         worker->priv->is_program_session = g_variant_get_boolean (value);
+                 } else if (g_strcmp0 (key, "log-file") == 0) {
+                         worker->priv->log_file = g_variant_dup_string (value, NULL);
+                 } else if (g_strcmp0 (key, "x11-display-name") == 0) {
+                         worker->priv->x11_display_name = g_variant_dup_string (value, NULL);
+                 } else if (g_strcmp0 (key, "x11-authority-file") == 0) {
+                         worker->priv->x11_authority_file = g_variant_dup_string (value, NULL);
+                 } else if (g_strcmp0 (key, "console") == 0) {
+                         worker->priv->display_device = g_variant_dup_string (value, NULL);
+                 } else if (g_strcmp0 (key, "seat-id") == 0) {
+                         worker->priv->display_seat_id = g_variant_dup_string (value, NULL);
+                 } else if (g_strcmp0 (key, "hostname") == 0) {
+                         worker->priv->hostname = g_variant_dup_string (value, NULL);
+                 } else if (g_strcmp0 (key, "display-is-local") == 0) {
+                         worker->priv->display_is_local = g_variant_get_boolean (value);
+                 } else if (g_strcmp0 (key, "display-is-initial") == 0) {
+                         worker->priv->display_is_initial = g_variant_get_boolean (value);
+                 }
+         }
+ 
+         worker->priv->pending_invocation = invocation;
+ 
+         if (!worker->priv->is_program_session) {
++                worker->priv->user_settings = gdm_session_settings_new ();
++
+                 g_signal_connect_swapped (worker->priv->user_settings,
+                                           "notify::language-name",
+                                           G_CALLBACK (on_saved_language_name_read),
+                                           worker);
+ 
+                 g_signal_connect_swapped (worker->priv->user_settings,
+                                           "notify::session-name",
+                                           G_CALLBACK (on_saved_session_name_read),
+                                           worker);
+ 
+                 if (worker->priv->username) {
+                         wait_for_settings = !gdm_session_settings_load (worker->priv->user_settings,
+                                                                         worker->priv->username);
+                 }
+         }
+ 
+         if (wait_for_settings) {
+                 /* Load settings from accounts daemon before continuing
+                  */
+                 g_signal_connect (G_OBJECT (worker->priv->user_settings),
+                                   "notify::is-loaded",
+                                   G_CALLBACK (on_settings_is_loaded_changed),
+                                   worker);
+         } else {
+                 queue_state_change (worker);
+         }
+ 
+         return TRUE;
+ }
+ 
+ static gboolean
+ gdm_session_worker_handle_setup (GdmDBusWorker         *object,
+                                  GDBusMethodInvocation *invocation,
+                                  const char            *service,
+                                  const char            *x11_display_name,
+                                  const char            *x11_authority_file,
+                                  const char            *console,
+                                  const char            *seat_id,
+                                  const char            *hostname,
+                                  gboolean               display_is_local,
+                                  gboolean               display_is_initial)
+ {
+         GdmSessionWorker *worker = GDM_SESSION_WORKER (object);
+         validate_and_queue_state_change (worker, invocation, GDM_SESSION_WORKER_STATE_SETUP_COMPLETE);
+ 
+         worker->priv->service = g_strdup (service);
+         worker->priv->x11_display_name = g_strdup (x11_display_name);
+         worker->priv->x11_authority_file = g_strdup (x11_authority_file);
+         worker->priv->display_device = g_strdup (console);
+         worker->priv->display_seat_id = g_strdup (seat_id);
+         worker->priv->hostname = g_strdup (hostname);
+         worker->priv->display_is_local = display_is_local;
+         worker->priv->display_is_initial = display_is_initial;
+         worker->priv->username = NULL;
+ 
++        worker->priv->user_settings = gdm_session_settings_new ();
++
+         g_signal_connect_swapped (worker->priv->user_settings,
+                                   "notify::language-name",
+                                   G_CALLBACK (on_saved_language_name_read),
+                                   worker);
+ 
+         g_signal_connect_swapped (worker->priv->user_settings,
+                                   "notify::session-name",
+                                   G_CALLBACK (on_saved_session_name_read),
+                                   worker);
+         return TRUE;
+ }
+ 
+ static gboolean
+ gdm_session_worker_handle_setup_for_user (GdmDBusWorker         *object,
+                                           GDBusMethodInvocation *invocation,
+                                           const char            *service,
+                                           const char            *username,
+                                           const char            *x11_display_name,
+                                           const char            *x11_authority_file,
+                                           const char            *console,
+                                           const char            *seat_id,
+                                           const char            *hostname,
+                                           gboolean               display_is_local,
+                                           gboolean               display_is_initial)
+ {
+         GdmSessionWorker *worker = GDM_SESSION_WORKER (object);
+ 
+         if (!validate_state_change (worker, invocation, GDM_SESSION_WORKER_STATE_SETUP_COMPLETE))
+                 return TRUE;
+ 
+         worker->priv->service = g_strdup (service);
+         worker->priv->x11_display_name = g_strdup (x11_display_name);
+         worker->priv->x11_authority_file = g_strdup (x11_authority_file);
+         worker->priv->display_device = g_strdup (console);
+         worker->priv->display_seat_id = g_strdup (seat_id);
+         worker->priv->hostname = g_strdup (hostname);
+         worker->priv->display_is_local = display_is_local;
+         worker->priv->display_is_initial = display_is_initial;
+         worker->priv->username = g_strdup (username);
+ 
++        worker->priv->user_settings = gdm_session_settings_new ();
++
+         g_signal_connect_swapped (worker->priv->user_settings,
+                                   "notify::language-name",
+                                   G_CALLBACK (on_saved_language_name_read),
+                                   worker);
+ 
+         g_signal_connect_swapped (worker->priv->user_settings,
+                                   "notify::session-name",
+                                   G_CALLBACK (on_saved_session_name_read),
+                                   worker);
+ 
+         /* Load settings from accounts daemon before continuing
+          */
+         worker->priv->pending_invocation = invocation;
+         if (gdm_session_settings_load (worker->priv->user_settings, username)) {
+                 queue_state_change (worker);
+         } else {
+                 g_signal_connect (G_OBJECT (worker->priv->user_settings),
+                                   "notify::is-loaded",
+                                   G_CALLBACK (on_settings_is_loaded_changed),
+                                   worker);
+         }
+ 
+         return TRUE;
+ }
+ 
+ static gboolean
+ gdm_session_worker_handle_setup_for_program (GdmDBusWorker         *object,
+                                              GDBusMethodInvocation *invocation,
+                                              const char            *service,
+                                              const char            *username,
+@@ -3589,61 +3605,60 @@ static void
+ reauthentication_request_free (ReauthenticationRequest *request)
+ {
+ 
+         g_signal_handlers_disconnect_by_func (request->session,
+                                               G_CALLBACK (on_reauthentication_client_connected),
+                                               request);
+         g_signal_handlers_disconnect_by_func (request->session,
+                                               G_CALLBACK (on_reauthentication_client_disconnected),
+                                               request);
+         g_signal_handlers_disconnect_by_func (request->session,
+                                               G_CALLBACK (on_reauthentication_cancelled),
+                                               request);
+         g_signal_handlers_disconnect_by_func (request->session,
+                                               G_CALLBACK (on_reauthentication_conversation_started),
+                                               request);
+         g_signal_handlers_disconnect_by_func (request->session,
+                                               G_CALLBACK (on_reauthentication_conversation_stopped),
+                                               request);
+         g_signal_handlers_disconnect_by_func (request->session,
+                                               G_CALLBACK (on_reauthentication_verification_complete),
+                                               request);
+         g_clear_object (&request->session);
+         g_slice_free (ReauthenticationRequest, request);
+ }
+ 
+ static void
+ gdm_session_worker_init (GdmSessionWorker *worker)
+ {
+         worker->priv = GDM_SESSION_WORKER_GET_PRIVATE (worker);
+ 
+-        worker->priv->user_settings = gdm_session_settings_new ();
+         worker->priv->reauthentication_requests = g_hash_table_new_full (NULL,
+                                                                          NULL,
+                                                                          NULL,
+                                                                          (GDestroyNotify)
+                                                                          reauthentication_request_free);
+ }
+ 
+ static void
+ gdm_session_worker_unwatch_child (GdmSessionWorker *worker)
+ {
+         if (worker->priv->child_watch_id == 0)
+                 return;
+ 
+         g_source_remove (worker->priv->child_watch_id);
+         worker->priv->child_watch_id = 0;
+ }
+ 
+ 
+ static void
+ gdm_session_worker_finalize (GObject *object)
+ {
+         GdmSessionWorker *worker;
+ 
+         g_return_if_fail (object != NULL);
+         g_return_if_fail (GDM_IS_SESSION_WORKER (object));
+ 
+         worker = GDM_SESSION_WORKER (object);
+ 
+         g_return_if_fail (worker->priv != NULL);
+ 
+-- 
+2.33.1
+

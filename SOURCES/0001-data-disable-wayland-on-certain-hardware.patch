@@ -1,0 +1,63 @@
+From e01c0894669f5fe3d1a1c4148b7507e61b95d035 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Mon, 11 Feb 2019 18:14:07 -0500
+Subject: [PATCH] data: disable wayland on certain hardware
+
+We're having issues with wayland on passthrough to virt
+setups and with the vendor nvidia driver on hybrid graphics
+setups, so disable it in those cases.
+
+Also disable it on server chips for performance reasons.
+---
+ data/61-gdm.rules.in | 39 +++++++++++++++++++++++++++++++++++----
+ 1 file changed, 35 insertions(+), 4 deletions(-)
+
+diff --git a/data/61-gdm.rules.in b/data/61-gdm.rules.in
+index b1da191f..d599a146 100644
+--- a/data/61-gdm.rules.in
++++ b/data/61-gdm.rules.in
+@@ -1,6 +1,37 @@
+ # disable Wayland on Hi1710 chipsets
+-ATTR{vendor}=="0x19e5", ATTR{device}=="0x1711", RUN+="@libexecdir@/gdm-runtime-config set daemon WaylandEnable false"
+-# disable Wayland when using the proprietary nvidia driver
+-DRIVER=="nvidia", RUN+="@libexecdir@/gdm-runtime-config set daemon WaylandEnable false"
++ATTR{vendor}=="0x19e5", ATTR{device}=="0x1711", RUN+="@libexecdir@/gdm-disable-wayland"
++
++# disable Wayland on Matrox chipsets
++ATTR{vendor}=="0x102b", ATTR{device}=="0x0522", RUN+="@libexecdir@/gdm-disable-wayland"
++ATTR{vendor}=="0x102b", ATTR{device}=="0x0524", RUN+="@libexecdir@/gdm-disable-wayland"
++ATTR{vendor}=="0x102b", ATTR{device}=="0x0530", RUN+="@libexecdir@/gdm-disable-wayland"
++ATTR{vendor}=="0x102b", ATTR{device}=="0x0532", RUN+="@libexecdir@/gdm-disable-wayland"
++ATTR{vendor}=="0x102b", ATTR{device}=="0x0533", RUN+="@libexecdir@/gdm-disable-wayland"
++ATTR{vendor}=="0x102b", ATTR{device}=="0x0534", RUN+="@libexecdir@/gdm-disable-wayland"
++ATTR{vendor}=="0x102b", ATTR{device}=="0x0536", RUN+="@libexecdir@/gdm-disable-wayland"
++ATTR{vendor}=="0x102b", ATTR{device}=="0x0538", RUN+="@libexecdir@/gdm-disable-wayland"
++
++# disable Wayland on aspeed chipsets
++ATTR{vendor}=="0x1a03", ATTR{device}=="0x2010", RUN+="@libexecdir@/gdm-disable-wayland"
++ATTR{vendor}=="0x1a03", ATTR{device}=="0x2000", RUN+="@libexecdir@/gdm-disable-wayland"
++
++# disable Wayland on hybrid systems with vendor nvidia driver
++# default to Xorg on single gpu vendor nvidia systems
++DRIVER=="nvidia", ENV{GDM_HAS_VENDOR_NVIDIA_DRIVER}="1"
++DRIVER=="nvidia", RUN+="@libexecdir@/gdm-runtime-config set daemon PreferredDisplayServer xorg"
++SUBSYSTEM=="drm", KERNEL=="card[1-9]*", ENV{GDM_HAS_NVIDIA_DRIVER}=="1", RUN+="@libexecdir@/gdm-disable-wayland"
++ACTION=="add", SUBSYSTEM=="module", KERNEL=="nvidia_drm", ATTR{parameters/modeset}=="N", RUN+="/usr/libexec/gdm-disable-wayland"
++
++# disable Wayland on HyperV guests
++DRIVER=="hyperv_fb", RUN+="@libexecdir@/gdm-disable-wayland"
++
++# disable Wayland on passthrough graphics setups for now (assumes passthrough if
++# there is more than one card, and one of the cards is virt: cirrus, bochs, qxl)
++ATTR{vendor}=="0x1013", ATTR{device}=="0x00b8", ATTR{subsystem_vendor}=="0x1af4", ATTR{subsystem_device}=="0x1100", ENV{GDM_HAS_VIRTUAL_GPU}="1"
++ATTR{vendor}=="0x1b36", ATTR{device}=="0x0100", ENV{GDM_HAS_VIRTUAL_GPU}="1"
++ATTR{vendor}=="0x1234", ATTR{device}=="0x1111", ENV{GDM_HAS_VIRTUAL_GPU}="1"
++
++SUBSYSTEM=="drm", KERNEL=="card[1-9]*", ENV{GDM_HAS_VIRTUAL_GPU}=="1", RUN+="@libexecdir@/gdm-disable-wayland"
++
+ # disable Wayland if modesetting is disabled
+-IMPORT{cmdline}="nomodeset", RUN+="@libexecdir@/gdm-runtime-config set daemon WaylandEnable false"
++IMPORT{cmdline}="nomodeset", RUN+="@libexecdir@/gdm-disable-wayland"
+-- 
+2.27.0
+

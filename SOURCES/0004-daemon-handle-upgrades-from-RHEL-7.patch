@@ -1,0 +1,250 @@
+From 738a10ca78e154ad4c3df9a1298eaad01516457e Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Mon, 20 Aug 2018 14:30:59 -0400
+Subject: [PATCH 4/4] daemon: handle upgrades from RHEL 7
+
+RHEL 7 users need to stay on X if they were using X,
+and they need to stay on gnome-classic if they were using
+gnome-classic.
+
+This commit examines the user's config to deduce whether
+or not they were using RHEL 7 and in the event they were
+try to get the right settings.
+---
+ daemon/gdm-session-settings.c | 19 +++++++++++++++++++
+ daemon/gdm-session.c          | 19 ++++++++-----------
+ 2 files changed, 27 insertions(+), 11 deletions(-)
+
+diff --git a/daemon/gdm-session-settings.c b/daemon/gdm-session-settings.c
+index a4b7f1a6..a84b2ffa 100644
+--- a/daemon/gdm-session-settings.c
++++ b/daemon/gdm-session-settings.c
+@@ -270,95 +270,114 @@ gdm_session_settings_get_property (GObject    *object,
+ 
+                 default:
+                         G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+     }
+ }
+ 
+ GdmSessionSettings *
+ gdm_session_settings_new (void)
+ {
+         GdmSessionSettings *settings;
+ 
+         settings = g_object_new (GDM_TYPE_SESSION_SETTINGS,
+                                  NULL);
+ 
+         return settings;
+ }
+ 
+ gboolean
+ gdm_session_settings_is_loaded (GdmSessionSettings  *settings)
+ {
+         if (settings->priv->user == NULL) {
+                 return FALSE;
+         }
+ 
+         return act_user_is_loaded (settings->priv->user);
+ }
+ 
+ static void
+ load_settings_from_user (GdmSessionSettings *settings)
+ {
++        const char *system_id = NULL, *system_version_id = NULL;
+         const char *object_path;
+         const char *session_name;
+         const char *session_type;
+         const char *language_name;
+ 
+         if (!act_user_is_loaded (settings->priv->user)) {
+                 g_warning ("GdmSessionSettings: trying to load user settings from unloaded user");
+                 return;
+         }
+ 
+         object_path = act_user_get_object_path (settings->priv->user);
+ 
+         if (object_path != NULL) {
+                 g_autoptr (GError) error = NULL;
+                 settings->priv->user_system_proxy = gdm_accounts_service_user_system_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
+                                                                                                              G_DBUS_PROXY_FLAGS_NONE,
+                                                                                                              "org.freedesktop.Accounts",
+                                                                                                              object_path,
+                                                                                                              NULL,
+                                                                                                              &error);
+                 if (error != NULL) {
+                         g_debug ("GdmSessionSettings: couldn't retrieve user system proxy from accountsservice: %s",
+                                  error->message);
++                } else {
++                        system_id = gdm_accounts_service_user_system_get_id (settings->priv->user_system_proxy);
++                        system_version_id = gdm_accounts_service_user_system_get_version_id (settings->priv->user_system_proxy);
+                 }
+         }
+ 
+ 
+ 
+ 
+ 
+         session_type = act_user_get_session_type (settings->priv->user);
+         session_name = act_user_get_session (settings->priv->user);
+ 
+         g_debug ("GdmSessionSettings: saved session is %s (type %s)", session_name, session_type);
+ 
++        if (system_id == NULL || (g_strcmp0 (system_id, "rhel") == 0 && g_str_has_prefix (system_version_id, "7."))) {
++                /* if there's also no session name in the file and we're coming from RHEL 7,
++                 * then we should assume classic session
++                 */
++                if (session_name == NULL || session_name[0] == '\0')
++                        session_name = "gnome-classic";
++
++                /* only presume wayland if the user specifically picked it in RHEL 7
++                 */
++                if (g_strcmp0 (session_name, "gnome-wayland") == 0)
++                        session_type = "wayland";
++                else
++                        session_type = "x11";
++        }
++
+         if (session_type != NULL && session_type[0] != '\0') {
+                 gdm_session_settings_set_session_type (settings, session_type);
+         }
+ 
+         if (session_name != NULL && session_name[0] != '\0') {
+                 gdm_session_settings_set_session_name (settings, session_name);
+         }
+ 
+         language_name = act_user_get_language (settings->priv->user);
+ 
+         g_debug ("GdmSessionSettings: saved language is %s", language_name);
+         if (language_name != NULL && language_name[0] != '\0') {
+                 gdm_session_settings_set_language_name (settings, language_name);
+         }
+ 
+ out:
+         g_object_notify (G_OBJECT (settings), "is-loaded");
+ }
+ 
+ static void
+ on_user_is_loaded_changed (ActUser            *user,
+                            GParamSpec         *pspec,
+                            GdmSessionSettings *settings)
+ {
+         if (act_user_is_loaded (settings->priv->user)) {
+                 load_settings_from_user (settings);
+                 g_signal_handlers_disconnect_by_func (G_OBJECT (settings->priv->user),
+                                                       G_CALLBACK (on_user_is_loaded_changed),
+                                                       settings);
+         }
+diff --git a/daemon/gdm-session.c b/daemon/gdm-session.c
+index d1e2c301..d4a46d87 100644
+--- a/daemon/gdm-session.c
++++ b/daemon/gdm-session.c
+@@ -3207,98 +3207,95 @@ gdm_session_get_session_id (GdmSession *self)
+         return conversation->session_id;
+ }
+ 
+ const char *
+ gdm_session_get_conversation_session_id (GdmSession *self,
+                                          const char *service_name)
+ {
+         GdmSessionConversation *conversation;
+ 
+         g_return_val_if_fail (GDM_IS_SESSION (self), NULL);
+ 
+         conversation = find_conversation_by_name (self, service_name);
+ 
+         if (conversation == NULL) {
+                 return NULL;
+         }
+ 
+         return conversation->session_id;
+ }
+ 
+ static char *
+ get_session_filename (GdmSession *self)
+ {
+         return g_strdup_printf ("%s.desktop", get_session_name (self));
+ }
+ 
+ #ifdef ENABLE_WAYLAND_SUPPORT
+ static gboolean
+ gdm_session_is_wayland_session (GdmSession *self)
+ {
+-        GKeyFile   *key_file;
++        g_autoptr (GKeyFile) key_file = NULL;
+         gboolean    is_wayland_session = FALSE;
+-        char       *filename;
+-        char       *full_path = NULL;
++        g_autofree char       *filename = NULL;
++        g_autofree char       *full_path = NULL;
+ 
+         g_return_val_if_fail (self != NULL, FALSE);
+         g_return_val_if_fail (GDM_IS_SESSION (self), FALSE);
+ 
+         filename = get_session_filename (self);
+ 
+         if (supports_session_type (self, "wayland")) {
+                 key_file = load_key_file_for_file (self, filename, NULL, &full_path);
+ 
+                 if (key_file == NULL) {
+                         goto out;
+                 }
+-        }
+ 
+-        if (full_path != NULL && strstr (full_path, "/wayland-sessions/") != NULL) {
+-                is_wayland_session = TRUE;
++                if (full_path != NULL && strstr (full_path, "/wayland-sessions/") != NULL) {
++                        is_wayland_session = TRUE;
++                }
+         }
+-        g_debug ("GdmSession: checking if file '%s' is wayland session: %s", filename, is_wayland_session? "yes" : "no");
+ 
+ out:
+-        g_clear_pointer (&key_file, g_key_file_free);
+-        g_free (filename);
++        g_debug ("GdmSession: checking if file '%s' is wayland session: %s", filename, is_wayland_session? "yes" : "no");
+         return is_wayland_session;
+ }
+ #endif
+ 
+ static void
+ update_session_type (GdmSession *self)
+ {
+ #ifdef ENABLE_WAYLAND_SUPPORT
+         gboolean is_wayland_session = FALSE;
+ 
+-        if (supports_session_type (self, "wayland"))
+-                is_wayland_session = gdm_session_is_wayland_session (self);
++        is_wayland_session = gdm_session_is_wayland_session (self);
+ 
+         if (is_wayland_session) {
+                 set_session_type (self, "wayland");
+         } else {
+                 set_session_type (self, NULL);
+         }
+ #endif
+ }
+ 
+ gboolean
+ gdm_session_session_registers (GdmSession *self)
+ {
+         g_autoptr(GError) error = NULL;
+         g_autoptr(GKeyFile) key_file = NULL;
+         gboolean session_registers = FALSE;
+         g_autofree char *filename = NULL;
+ 
+         g_return_val_if_fail (self != NULL, FALSE);
+         g_return_val_if_fail (GDM_IS_SESSION (self), FALSE);
+ 
+         filename = get_session_filename (self);
+ 
+         key_file = load_key_file_for_file (self, filename, NULL, NULL);
+ 
+         session_registers = g_key_file_get_boolean (key_file,
+                                                     G_KEY_FILE_DESKTOP_GROUP,
+                                                     "X-GDM-SessionRegisters",
+                                                     &error);
+         if (!session_registers &&
+             error != NULL &&
+-- 
+2.33.1
+

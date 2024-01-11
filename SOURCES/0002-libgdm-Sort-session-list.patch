@@ -1,0 +1,131 @@
+From c00daca1579c47f3f62894ff2378c37e6cbebfd3 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Tue, 20 Jul 2021 13:36:45 -0400
+Subject: [PATCH 2/4] libgdm: Sort session list
+
+Right now the session list comes out in hash table order.
+
+This commit changes the code to sort by description.
+---
+ libgdm/gdm-sessions.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/libgdm/gdm-sessions.c b/libgdm/gdm-sessions.c
+index 97ed5ef3..f078e04b 100644
+--- a/libgdm/gdm-sessions.c
++++ b/libgdm/gdm-sessions.c
+@@ -311,92 +311,111 @@ collect_sessions (void)
+                 g_ptr_array_add (wayland_search_array, g_strdup (wayland_search_dirs[i]));
+         }
+ #endif
+ 
+         if (gdm_available_sessions_map == NULL) {
+                 gdm_available_sessions_map = g_hash_table_new_full (g_str_hash, g_str_equal,
+                                                                     g_free, (GDestroyNotify)gdm_session_file_free);
+         }
+ 
+         if (!supported_session_types || g_strv_contains ((const char * const *) supported_session_types, "x11")) {
+                 for (i = 0; i < xorg_search_array->len; i++) {
+                         collect_sessions_from_directory (g_ptr_array_index (xorg_search_array, i));
+                 }
+         }
+ 
+ #ifdef ENABLE_WAYLAND_SUPPORT
+ #ifdef ENABLE_USER_DISPLAY_SERVER
+         if (!supported_session_types  || g_strv_contains ((const char * const *) supported_session_types, "wayland")) {
+                 for (i = 0; i < wayland_search_array->len; i++) {
+                         collect_sessions_from_directory (g_ptr_array_index (wayland_search_array, i));
+                 }
+         }
+ #endif
+ #endif
+ 
+         g_hash_table_foreach_remove (gdm_available_sessions_map,
+                                      remove_duplicate_sessions,
+                                      names_seen_before);
+ }
+ 
++static gint
++compare_session_ids (gconstpointer  a,
++                     gconstpointer  b)
++{
++        GdmSessionFile *session_a, *session_b;
++        session_a = (GdmSessionFile *) g_hash_table_lookup (gdm_available_sessions_map, a);
++        session_b = (GdmSessionFile *) g_hash_table_lookup (gdm_available_sessions_map, b);
++
++        if (session_a == NULL)
++                return -1;
++
++        if (session_b == NULL)
++                return 1;
++
++        return g_strcmp0 (session_a->translated_name, session_b->translated_name);
++}
++
+ /**
+  * gdm_get_session_ids:
+  *
+  * Reads /usr/share/xsessions and other relevant places for possible sessions
+  * to log into and returns the complete list.
+  *
+  * Returns: (transfer full): a %NULL terminated list of session ids
+  */
+ char **
+ gdm_get_session_ids (void)
+ {
+         GHashTableIter iter;
+         gpointer key, value;
+         GPtrArray *array;
+ 
+         if (!gdm_sessions_map_is_initialized) {
+                 collect_sessions ();
+ 
+                 gdm_sessions_map_is_initialized = TRUE;
+         }
+ 
+         array = g_ptr_array_new ();
+         g_hash_table_iter_init (&iter, gdm_available_sessions_map);
+         while (g_hash_table_iter_next (&iter, &key, &value)) {
+                 GdmSessionFile *session;
+ 
+                 session = (GdmSessionFile *) value;
+ 
+                 g_ptr_array_add (array, g_strdup (session->id));
+         }
+         g_ptr_array_add (array, NULL);
+ 
++        g_ptr_array_sort (array, compare_session_ids);
++
+         return (char **) g_ptr_array_free (array, FALSE);
+ }
+ 
+ /**
+  * gdm_get_session_name_and_description:
+  * @id: an id from gdm_get_session_ids()
+  * @description: (out): optional returned session description
+  *
+  * Takes an xsession id and returns the name and comment about it.
+  *
+  * Returns: The session name if found, or %NULL otherwise
+  */
+ char *
+ gdm_get_session_name_and_description (const char  *id,
+                                       char       **description)
+ {
+         GdmSessionFile *session;
+         char *name;
+ 
+         if (!gdm_sessions_map_is_initialized) {
+                 collect_sessions ();
+ 
+                 gdm_sessions_map_is_initialized = TRUE;
+         }
+ 
+         session = (GdmSessionFile *) g_hash_table_lookup (gdm_available_sessions_map,
+                                                           id);
+ 
+         if (session == NULL) {
+                 return NULL;
+-- 
+2.34.1
+
