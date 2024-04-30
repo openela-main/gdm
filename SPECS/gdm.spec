@@ -11,7 +11,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.1
-Release: 21%{?dist}
+Release: 23%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -42,6 +42,8 @@ Patch50002: 0002-daemon-Support-X-servers-built-with-Dlisten_tcp-true.patch
 Patch60001: 0001-session-settings-Fetch-session-from-user-even-if-use.patch
 
 Patch70001: 0001-manager-Fix-btmp-record-accounting.patch
+
+Patch80001: 0001-gdm-session-Force-reuse-vt-mode-for-legacy-Xorg-mode.patch
 
 # Latest udev rules and support code
 Patch90001: 0001-local-display-factory-Stall-startup-until-main-graph.patch
@@ -351,6 +353,15 @@ dconf update || :
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
+* Fri Dec 15 2023 Ray Strode <rstrode@redhat.com> - 40.1-23
+- Make /var/log/gdm tmpfiles.d snippet match files manifest
+  to fix installability test
+  Related: RHEL-19410
+
+* Mon Nov 27 2023 Ray Strode <rstrode@redhat.com> - 40.1-22
+- Fix PreferredDisplayServer=legacy-xorg in /etc/gdm/custom.conf
+  Resolves: RHEL-19410
+
 * Fri Jan 27 2023 Ray Strode <rstrode@redhat.com> - 40.1-21
 - Enable IPV6 support
   Resolves: #2165049
