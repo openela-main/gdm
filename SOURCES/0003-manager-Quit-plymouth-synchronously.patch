@@ -1,0 +1,94 @@
+From 190a9f31446ddab66c8b5c2e246a6253f85bde76 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Wed, 24 Jul 2024 08:40:08 -0400
+Subject: [PATCH 3/3] manager: Quit plymouth synchronously
+
+Plymouth needs to finish quitting before we start Xorg, so we can't
+run it async. This command makes sure it gets run synchronously.
+---
+ daemon/gdm-manager.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/daemon/gdm-manager.c b/daemon/gdm-manager.c
+index 100b967fb..d4ad949fe 100644
+--- a/daemon/gdm-manager.c
++++ b/daemon/gdm-manager.c
+@@ -167,67 +167,72 @@ plymouth_prepare_for_transition (void)
+ 
+         error = NULL;
+         res = g_spawn_command_line_sync ("plymouth deactivate",
+                                          NULL, NULL, NULL, &error);
+         if (! res) {
+                 g_warning ("Could not deactivate plymouth: %s", error->message);
+                 g_error_free (error);
+         }
+ }
+ 
+ static gboolean
+ plymouth_quit_with_transition (void)
+ {
+         gboolean res;
+         GError  *error;
+ 
+         error = NULL;
+         res = g_spawn_command_line_async ("plymouth quit --retain-splash", &error);
+         if (! res) {
+                 g_warning ("Could not quit plymouth: %s", error->message);
+                 g_error_free (error);
+         }
+ 
+         return G_SOURCE_REMOVE;
+ }
+ 
+ static void
+ plymouth_quit_without_transition (void)
+ {
+         gboolean res;
+-        GError  *error;
++        g_autoptr (GError) error = NULL;
++        g_autofree char *standard_error = NULL;
++        int wait_status = 0;
+ 
+         error = NULL;
+-        res = g_spawn_command_line_async ("plymouth quit", &error);
++        res = g_spawn_command_line_sync ("plymouth quit", NULL, &standard_error, &wait_status, &error);
+         if (! res) {
+                 g_warning ("Could not quit plymouth: %s", error->message);
+-                g_error_free (error);
++        } else if (!WIFEXITED (wait_status) || WEXITSTATUS (wait_status) != 0) {
++                g_warning ("plymouth errored on quit command%s%s",
++                           standard_error? ":" : "",
++                           standard_error?: "");
+         }
+ }
+ #endif
+ 
+ static char *
+ get_session_id_for_pid (pid_t    pid,
+                         GError **error)
+ {
+         char *session, *gsession;
+         int ret;
+ 
+         session = NULL;
+         ret = sd_pid_get_session (pid, &session);
+         if (ret < 0) {
+                 g_set_error (error,
+                              GDM_DISPLAY_ERROR,
+                              GDM_DISPLAY_ERROR_GETTING_SESSION_INFO,
+                              "Error getting session id from systemd: %s",
+                              g_strerror (-ret));
+                 return NULL;
+         }
+ 
+         if (session != NULL) {
+                 gsession = g_strdup (session);
+                 free (session);
+ 
+                 return gsession;
+         } else {
+                 return NULL;
+         }
+-- 
+2.44.0
+

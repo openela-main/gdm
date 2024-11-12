@@ -1,0 +1,219 @@
+From f7295f73f424e22eacb940c92e43326d75c901e1 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Mon, 22 Jul 2024 14:58:47 -0400
+Subject: [PATCH 1/3] display: Add new FAILING state
+
+We need to be able to detect failure and quit plymouth before
+reacting to the failure (and starting Xorg).
+
+This commit adds a new FAILING state that gets run before FAILED,
+so things can be ordered properly
+d#
+---
+ daemon/gdm-display.c               | 1 +
+ daemon/gdm-display.h               | 1 +
+ daemon/gdm-local-display-factory.c | 2 ++
+ 3 files changed, 4 insertions(+)
+
+diff --git a/daemon/gdm-display.c b/daemon/gdm-display.c
+index 9438fe72c..0e6249896 100644
+--- a/daemon/gdm-display.c
++++ b/daemon/gdm-display.c
+@@ -667,60 +667,61 @@ gdm_display_disconnect (GdmDisplay *self)
+         xcb_flush (priv->xcb_connection);
+ 
+         g_clear_pointer (&priv->xcb_connection, xcb_disconnect);
+ }
+ 
+ gboolean
+ gdm_display_unmanage (GdmDisplay *self)
+ {
+         GdmDisplayPrivate *priv;
+ 
+         g_return_val_if_fail (GDM_IS_DISPLAY (self), FALSE);
+ 
+         priv = gdm_display_get_instance_private (self);
+ 
+         gdm_display_disconnect (self);
+ 
+         if (priv->user_access_file != NULL) {
+                 gdm_display_access_file_close (priv->user_access_file);
+                 g_object_unref (priv->user_access_file);
+                 priv->user_access_file = NULL;
+         }
+ 
+         if (priv->access_file != NULL) {
+                 gdm_display_access_file_close (priv->access_file);
+                 g_object_unref (priv->access_file);
+                 priv->access_file = NULL;
+         }
+ 
+         if (!priv->session_registered) {
+                 g_warning ("GdmDisplay: Session never registered, failing");
++                _gdm_display_set_status (self, GDM_DISPLAY_FAILING);
+                 _gdm_display_set_status (self, GDM_DISPLAY_FAILED);
+         } else {
+                 _gdm_display_set_status (self, GDM_DISPLAY_UNMANAGED);
+         }
+ 
+         return TRUE;
+ }
+ 
+ gboolean
+ gdm_display_get_id (GdmDisplay         *self,
+                     char              **id,
+                     GError            **error)
+ {
+         GdmDisplayPrivate *priv;
+ 
+         g_return_val_if_fail (GDM_IS_DISPLAY (self), FALSE);
+ 
+         priv = gdm_display_get_instance_private (self);
+         if (id != NULL) {
+                 *id = g_strdup (priv->id);
+         }
+ 
+         return TRUE;
+ }
+ 
+ gboolean
+ gdm_display_get_x11_display_name (GdmDisplay   *self,
+                                   char        **x11_display,
+                                   GError      **error)
+ {
+diff --git a/daemon/gdm-display.h b/daemon/gdm-display.h
+index ef3736cd3..bd048cd0d 100644
+--- a/daemon/gdm-display.h
++++ b/daemon/gdm-display.h
+@@ -9,60 +9,61 @@
+  *
+  * This program is distributed in the hope that it will be useful,
+  * but WITHOUT ANY WARRANTY; without even the implied warranty of
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  * GNU General Public License for more details.
+  *
+  * You should have received a copy of the GNU General Public License
+  * along with this program; if not, write to the Free Software
+  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+  *
+  */
+ 
+ 
+ #ifndef __GDM_DISPLAY_H
+ #define __GDM_DISPLAY_H
+ 
+ #include <glib-object.h>
+ #include <gio/gio.h>
+ 
+ G_BEGIN_DECLS
+ 
+ #define GDM_TYPE_DISPLAY (gdm_display_get_type ())
+ G_DECLARE_DERIVABLE_TYPE (GdmDisplay, gdm_display, GDM, DISPLAY, GObject)
+ 
+ typedef enum {
+         GDM_DISPLAY_UNMANAGED = 0,
+         GDM_DISPLAY_PREPARED,
+         GDM_DISPLAY_MANAGED,
+         GDM_DISPLAY_WAITING_TO_FINISH,
+         GDM_DISPLAY_FINISHED,
++        GDM_DISPLAY_FAILING,
+         GDM_DISPLAY_FAILED,
+ } GdmDisplayStatus;
+ 
+ struct _GdmDisplayClass
+ {
+         GObjectClass   parent_class;
+ 
+         /* methods */
+         gboolean (*prepare) (GdmDisplay *display);
+         void     (*manage)  (GdmDisplay *self);
+ };
+ 
+ typedef enum
+ {
+          GDM_DISPLAY_ERROR_GENERAL,
+          GDM_DISPLAY_ERROR_GETTING_USER_INFO,
+          GDM_DISPLAY_ERROR_GETTING_SESSION_INFO,
+ } GdmDisplayError;
+ 
+ #define GDM_DISPLAY_ERROR gdm_display_error_quark ()
+ 
+ GQuark              gdm_display_error_quark                    (void);
+ 
+ int                 gdm_display_get_status                     (GdmDisplay *display);
+ time_t              gdm_display_get_creation_time              (GdmDisplay *display);
+ char *              gdm_display_open_session_sync              (GdmDisplay    *display,
+                                                                 GPid           pid_of_caller,
+                                                                 uid_t          uid_of_caller,
+                                                                 GCancellable  *cancellable,
+                                                                 GError       **error);
+diff --git a/daemon/gdm-local-display-factory.c b/daemon/gdm-local-display-factory.c
+index 61522dbf0..5dc0aebe5 100644
+--- a/daemon/gdm-local-display-factory.c
++++ b/daemon/gdm-local-display-factory.c
+@@ -544,60 +544,62 @@ on_display_status_changed (GdmDisplay             *display,
+                       "is-initial", &is_initial,
+                       "is-local", &is_local,
+                       "session-type", &session_type,
+                       "session-class", &session_class,
+                       NULL);
+ 
+         status = gdm_display_get_status (display);
+ 
+         g_debug ("GdmLocalDisplayFactory: display status changed: %d", status);
+         switch (status) {
+         case GDM_DISPLAY_FINISHED:
+                 /* remove the display number from factory->used_display_numbers
+                    so that it may be reused */
+                 if (num != -1) {
+                         g_hash_table_remove (factory->used_display_numbers, GUINT_TO_POINTER (num));
+                 }
+                 gdm_display_factory_queue_purge_displays (GDM_DISPLAY_FACTORY (factory));
+ 
+                 /* if this is a local display, do a full resync.  Only
+                  * seats without displays will get created anyway.  This
+                  * ensures we get a new login screen when the user logs out,
+                  * if there isn't one.
+                  */
+                 if (is_local && g_strcmp0 (session_class, "greeter") != 0) {
+                         /* reset num failures */
+                         factory->num_failures = 0;
+ 
+                         gdm_local_display_factory_sync_seats (factory);
+                 }
+                 break;
++        case GDM_DISPLAY_FAILING:
++                break;
+         case GDM_DISPLAY_FAILED:
+                 /* leave the display number in factory->used_display_numbers
+                    so that it doesn't get reused */
+                 gdm_display_factory_queue_purge_displays (GDM_DISPLAY_FACTORY (factory));
+ 
+                 /* Create a new equivalent display if it was static */
+                 if (is_local) {
+ 
+                         factory->num_failures++;
+ 
+                         /* oh shit */
+                         if (factory->num_failures > MAX_DISPLAY_FAILURES)
+                                 g_warning ("GdmLocalDisplayFactory: maximum number of X display failures reached: check X server log for errors");
+                         else
+                                 ensure_display_for_seat (factory, seat_id);
+                 }
+                 break;
+         case GDM_DISPLAY_UNMANAGED:
+                 break;
+         case GDM_DISPLAY_PREPARED:
+                 break;
+         case GDM_DISPLAY_MANAGED:
+ #if defined(ENABLE_USER_DISPLAY_SERVER)
+                 g_signal_connect_object (display,
+                                          "notify::session-registered",
+                                          G_CALLBACK (on_session_registered_cb),
+                                          factory,
+                                          0);
+ #endif
+                 break;
+-- 
+2.44.0
+

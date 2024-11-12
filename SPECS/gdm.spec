@@ -11,7 +11,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.1
-Release: 23%{?dist}
+Release: 27%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -43,13 +43,20 @@ Patch60001: 0001-session-settings-Fetch-session-from-user-even-if-use.patch
 
 Patch70001: 0001-manager-Fix-btmp-record-accounting.patch
 
-Patch80001: 0001-gdm-session-Force-reuse-vt-mode-for-legacy-Xorg-mode.patch
+Patch80002: 0001-session-settings-Explicitly-cache-remote-users.patch
 
 # Latest udev rules and support code
 Patch90001: 0001-local-display-factory-Stall-startup-until-main-graph.patch
 Patch90002: 0002-common-Add-API-to-reload-settings-from-disk.patch
 Patch90003: 0003-common-Reload-settings-when-graphics-initialize.patch
 Patch90004: 0004-data-Use-latest-upstream-udev-rules.patch
+
+Patch100001: 0001-gdm-session-Force-reuse-vt-mode-for-legacy-Xorg-mode.patch
+Patch100002: 0002-local-display-factory-Fix-user-switching-with-legacy.patch
+
+Patch110001: 0001-display-Add-new-FAILING-state.patch
+Patch110002: 0002-manager-Quit-plymouth-at-first-sign-of-failure.patch
+Patch110003: 0003-manager-Quit-plymouth-synchronously.patch
 
 # Non-upstreamable workarounds
 Patch66610001: 0001-data-reap-gdm-sessions-on-shutdown.patch
@@ -353,6 +360,23 @@ dconf update || :
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
+* Wed Jul 24 2024 Ray Strode <rstrode@redhat.com> - 40.1-27
+- More fixes with wayland->xorg fallback
+  Related: RHEL-35045
+  Resolves: RHEL-50393
+
+* Tue Jul 23 2024 Ray Strode <rstrode@redhat.com> - 40.1-26
+- Fix failure doing wayland->xorg fallback
+  Related: RHEL-35045
+
+* Wed May 01 2024 Ray Strode <rstrode@redhat.com> - 40.1-25
+- Fix user switching with PreferredDisplayServer=legacy-xorg
+  Related: RHEL-29845
+
+* Tue Jan 16 2024 Andrew Lukoshko <alukoshko@almalinux.org> - 40.1-24
+- Explicitly cache remote users
+  Resolves: RHEL-21791
+
 * Fri Dec 15 2023 Ray Strode <rstrode@redhat.com> - 40.1-23
 - Make /var/log/gdm tmpfiles.d snippet match files manifest
   to fix installability test

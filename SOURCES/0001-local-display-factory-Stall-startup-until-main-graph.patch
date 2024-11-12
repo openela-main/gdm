@@ -1,4 +1,4 @@
-From e5b3467412874d27c311253e3d5d7e65a61d12a4 Mon Sep 17 00:00:00 2001
+From e88779b0785fe781608b10478ae092e8fd79ae0b Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Tue, 1 Mar 2022 13:25:02 -0500
 Subject: [PATCH 1/4] local-display-factory: Stall startup until main graphics
@@ -27,13 +27,13 @@ up and running before proceeding to start a login screen.
 
 Closes: https://gitlab.gnome.org/GNOME/gdm/-/issues/763
 ---
- daemon/gdm-local-display-factory.c | 164 ++++++++++++++++++++++++++---
+ daemon/gdm-local-display-factory.c | 168 ++++++++++++++++++++++++++---
  daemon/meson.build                 |   4 +
  meson.build                        |   2 +
- 4 files changed, 159 insertions(+), 12 deletions(-)
+ 3 files changed, 162 insertions(+), 12 deletions(-)
 
 diff --git a/daemon/gdm-local-display-factory.c b/daemon/gdm-local-display-factory.c
-index c00e1c47..0b1d3482 100644
+index ca14c31f5..56be1d9db 100644
 --- a/daemon/gdm-local-display-factory.c
 +++ b/daemon/gdm-local-display-factory.c
 @@ -1,100 +1,112 @@
@@ -398,7 +398,7 @@ index c00e1c47..0b1d3482 100644
                          }
  
                          g_debug ("GdmLocalDisplayFactory: Assuming we can use seat0 for X11 even though system says it doesn't support graphics!");
-@@ -1138,113 +1240,151 @@ on_vt_changed (GIOChannel    *source,
+@@ -1138,113 +1244,151 @@ on_vt_changed (GIOChannel    *source,
                                  if (factory->wait_to_finish_timeout_id != 0) {
                                           g_debug ("GdmLocalDisplayFactory: deferring previous login screen clean up operation");
                                           g_source_remove (factory->wait_to_finish_timeout_id);
@@ -551,7 +551,7 @@ index c00e1c47..0b1d3482 100644
  on_display_added (GdmDisplayStore        *display_store,
                    const char             *id,
 diff --git a/daemon/meson.build b/daemon/meson.build
-index 2e61b644..41f30abe 100644
+index 2e61b6447..41f30abef 100644
 --- a/daemon/meson.build
 +++ b/daemon/meson.build
 @@ -177,37 +177,41 @@ gdm_daemon_sources = files(
@@ -597,7 +597,7 @@ index 2e61b644..41f30abe 100644
    install_dir: get_option('sbindir')
  )
 diff --git a/meson.build b/meson.build
-index 02d609dc..05d8da41 100644
+index 02d609dc0..05d8da412 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -11,60 +11,61 @@ i18n = import('i18n')
@@ -725,5 +725,5 @@ index 02d609dc..05d8da41 100644
    subdir('chooser')
  endif
 -- 
-2.34.1
+2.40.0
 
