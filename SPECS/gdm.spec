@@ -11,7 +11,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.1
-Release: 27%{?dist}
+Release: 28%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -22,6 +22,8 @@ Source2: gdm-tmpfiles.conf
 
 # moved here from pulseaudio-gdm-hooks-11.1-16
 Source5: default.pa-for-gdm
+
+Source6: gdm.sysusers
 
 # Upstream backports
 Patch10001: 0001-local-display-factory-Provide-more-flexibility-for-c.patch
@@ -104,13 +106,13 @@ BuildRequires: pkgconfig(xorg-server)
 BuildRequires: plymouth-devel
 BuildRequires: systemd
 BuildRequires: systemd-devel
+BuildRequires: systemd-rpm-macros
 BuildRequires: which
 BuildRequires: xorg-x11-server-Xorg
 BuildRequires: xorg-x11-server-devel
 BuildRequires: yelp-devel
 BuildRequires: yelp-tools
 
-Requires(pre):    /usr/sbin/useradd
 %{?systemd_requires}
 
 Provides: service(graphical-login) = %{name}
@@ -138,6 +140,8 @@ Requires: xorg-x11-xinit
 # Until the greeter gets dynamic user support, it can't
 # use a user bus
 Requires: /usr/bin/dbus-run-session
+
+%{?sysusers_requires_compat}
 
 Requires(posttrans): dconf
 
@@ -195,6 +199,8 @@ mkdir -p %{buildroot}%{_sysconfdir}/gdm/PostSession
 
 install -p -m644 -D %{SOURCE2} %{buildroot}%{_tmpfilesdir}/%{name}.conf
 install -p -m644 -D %{SOURCE5} %{buildroot}%{_localstatedir}/lib/gdm/.config/pulse/default.pa
+install -p -m644 -D %{SOURCE6} %{buildroot}%{_sysusersdir}/%{name}.conf
+
 
 rm -f %{buildroot}%{_sysconfdir}/pam.d/gdm
 
@@ -218,11 +224,8 @@ mkdir -p %{buildroot}%{_sysconfdir}/dconf/db/gdm.d/locks
 %find_lang gdm --with-gnome
 
 %pre
-/usr/sbin/useradd -M -u 42 -d /var/lib/gdm -s /sbin/nologin -r gdm > /dev/null 2>&1
-/usr/sbin/usermod -d /var/lib/gdm -s /sbin/nologin gdm >/dev/null 2>&1
-# ignore errors, as we can't disambiguate between gdm already existed
-# and couldn't create account with the current adduser.
-exit 0
+%sysusers_create_compat %{SOURCE6}
+
 
 %post
 # if the user already has a config file, then migrate it to the new
@@ -346,6 +349,7 @@ dconf update || :
 %dir %{_userunitdir}/gnome-session@gnome-login.target.d/
 %{_userunitdir}/gnome-session@gnome-login.target.d/session.conf
 %{_tmpfilesdir}/%{name}.conf
+%{_sysusersdir}/%{name}.conf
 
 %files devel
 %dir %{_includedir}/gdm
@@ -360,6 +364,10 @@ dconf update || :
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
+* Fri Mar 07 2025 Tomas Pelka - 40.1-28
+- Use systemd sysusers config to create user and group
+  Resolves: RHEL-78738
+
 * Wed Jul 24 2024 Ray Strode <rstrode@redhat.com> - 40.1-27
 - More fixes with wayland->xorg fallback
   Related: RHEL-35045
