@@ -1,7 +1,7 @@
 From bcab8852cf7249a2220f6c737f7bb8a17b99249a Mon Sep 17 00:00:00 2001
 From: rpm-build <rpm-build>
 Date: Mon, 27 Nov 2023 15:29:09 -0500
-Subject: [PATCH 1/2] gdm-session: Force reuse vt mode for legacy Xorg mode
+Subject: [PATCH 1/4] gdm-session: Force reuse vt mode for legacy Xorg mode
 
 In the legacy Xorg mode, the X session and user session are
 supposed to use the same VT.

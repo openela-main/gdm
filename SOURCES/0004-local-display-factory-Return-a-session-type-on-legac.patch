@@ -1,0 +1,54 @@
+From 8bcb9f43c203ab4818381cd707128eac74ab958d Mon Sep 17 00:00:00 2001
+From: Joan Torres <joantolo@redhat.com>
+Date: Fri, 13 Jun 2025 12:56:41 +0200
+Subject: [PATCH 4/4] local-display-factory: Return a session type on
+ legacy-xorg
+
+On legacy-xorg, there's graphic support through Xorg.
+
+When returning none, it's considered that seat doesn't support graphics
+and has to wait a 10s timeout, then forces using Xorg.
+
+Avoid that timeout directly returning x11 as session type for
+legacy-xorg.
+---
+ daemon/gdm-local-display-factory.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/daemon/gdm-local-display-factory.c b/daemon/gdm-local-display-factory.c
+index 34842a7..f28fe1e 100644
+--- a/daemon/gdm-local-display-factory.c
++++ b/daemon/gdm-local-display-factory.c
+@@ -303,6 +303,7 @@ gdm_local_display_factory_get_session_types (GdmLocalDisplayFactory *factory,
+         const char *fallback_display_server = NULL;
+         gboolean wayland_preferred = FALSE;
+         gboolean xorg_preferred = FALSE;
++        gboolean legacy_xorg_preferred = FALSE;
+         g_autoptr (GPtrArray) session_types_array = NULL;
+         char **session_types;
+ 
+@@ -315,13 +316,18 @@ gdm_local_display_factory_get_session_types (GdmLocalDisplayFactory *factory,
+ 
+         wayland_preferred = g_str_equal (preferred_display_server, "wayland");
+         xorg_preferred = g_str_equal (preferred_display_server, "xorg");
++        legacy_xorg_preferred = g_str_equal (preferred_display_server, "legacy-xorg");
+ 
+-        if (wayland_preferred)
++        if (wayland_preferred) {
+                 fallback_display_server = "xorg";
+-        else if (xorg_preferred)
++        } else if (xorg_preferred) {
+                 fallback_display_server = "wayland";
+-        else
++        } else if (legacy_xorg_preferred) {
++                g_ptr_array_add (session_types_array, (gpointer) "x11");
++                return g_strdupv ((char **) session_types_array->pdata);
++        } else {
+                 return NULL;
++        }
+ 
+         if (!should_fall_back) {
+                 if (display_server_enabled (factory, preferred_display_server))
+-- 
+2.49.0
+

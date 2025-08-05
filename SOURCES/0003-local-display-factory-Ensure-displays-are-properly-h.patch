@@ -1,0 +1,105 @@
+From de73b654cd1b726b905a9bf3238c7eaabfe465d5 Mon Sep 17 00:00:00 2001
+From: Joan Torres <joantolo@redhat.com>
+Date: Fri, 13 Jun 2025 13:05:07 +0200
+Subject: [PATCH 3/4] local-display-factory: Ensure displays are properly
+ handled on status change
+
+1. There are some cases where a display will change its status from any
+   status to MANAGED and vice versa. Ensure that the display status handlers
+   dont' re do work that has already been done.
+2. For legacy-xorg displays that reuse the display from login manager,
+   avoid those displays to be killed on successfull authentication.
+---
+ daemon/gdm-local-display-factory.c | 35 +++++++++++++++++++++---------
+ daemon/gdm-manager.c               |  4 +++-
+ 2 files changed, 28 insertions(+), 11 deletions(-)
+
+diff --git a/daemon/gdm-local-display-factory.c b/daemon/gdm-local-display-factory.c
+index f28fe1e..61b7b45 100644
+--- a/daemon/gdm-local-display-factory.c
++++ b/daemon/gdm-local-display-factory.c
+@@ -600,6 +600,9 @@ on_display_status_changed (GdmDisplay             *display,
+                 break;
+         case GDM_DISPLAY_MANAGED:
+ #if defined(ENABLE_USER_DISPLAY_SERVER)
++                g_signal_handlers_disconnect_by_func (display,
++                                                      G_CALLBACK (on_session_registered_cb),
++                                                      factory);
+                 g_signal_connect_object (display,
+                                          "notify::session-registered",
+                                          G_CALLBACK (on_session_registered_cb),
+@@ -1183,6 +1186,18 @@ maybe_stop_greeter_in_background (GdmLocalDisplayFactory *factory,
+         g_object_set (G_OBJECT (display), "status", GDM_DISPLAY_WAITING_TO_FINISH, NULL);
+ }
+ 
++static void
++cancel_stop_greeter_in_background (GdmLocalDisplayFactory *factory,
++                                  GdmDisplay             *display)
++{
++        if (gdm_display_get_status (display) != GDM_DISPLAY_WAITING_TO_FINISH)
++                return;
++
++        g_debug ("GdmLocalDisplayFactory: cancelling killing login window");
++
++        g_object_set (G_OBJECT (display), "status", GDM_DISPLAY_MANAGED, NULL);
++}
++
+ static gboolean
+ on_vt_changed (GIOChannel    *source,
+                GIOCondition   condition,
+@@ -1261,23 +1276,23 @@ on_vt_changed (GIOChannel    *source,
+         store = gdm_display_factory_get_display_store (GDM_DISPLAY_FACTORY (factory));
+ 
+         /* if the old VT was running a wayland login screen kill it
++         * but cancel the killing if the user switched back to it
+          */
+         if (gdm_get_login_window_session_id ("seat0", &login_session_id)) {
+                 ret = sd_session_get_vt (login_session_id, &login_window_vt);
+                 if (ret == 0 && login_window_vt != 0) {
+-                        g_debug ("GdmLocalDisplayFactory: VT of login window is %u", login_window_vt);
+-                        if (login_window_vt == previous_vt) {
+-                                GdmDisplay *display;
++                        GdmDisplay *display;
+ 
+-                                g_debug ("GdmLocalDisplayFactory: VT switched from login window");
++                        g_debug ("GdmLocalDisplayFactory: VT of login window is %u", login_window_vt);
+ 
+-                                display = gdm_display_store_find (store,
+-                                                                  lookup_by_session_id,
+-                                                                  (gpointer) login_session_id);
+-                                if (display != NULL)
++                        display = gdm_display_store_find (store,
++                                                          lookup_by_session_id,
++                                                          (gpointer) login_session_id);
++                        if (display != NULL) {
++                                if (login_window_vt == previous_vt)
+                                         maybe_stop_greeter_in_background (factory, display);
+-                        } else {
+-                                g_debug ("GdmLocalDisplayFactory: VT not switched from login window");
++                                else if (login_window_vt == factory->active_vt)
++                                        cancel_stop_greeter_in_background (factory, display);
+                         }
+                 }
+         }
+diff --git a/daemon/gdm-manager.c b/daemon/gdm-manager.c
+index e1bc62d..7a68d52 100644
+--- a/daemon/gdm-manager.c
++++ b/daemon/gdm-manager.c
+@@ -1534,11 +1534,13 @@ on_display_status_changed (GdmDisplay *display,
+                         if ((display_number == -1 && status == GDM_DISPLAY_PREPARED) ||
+                             (display_number != -1 && status == GDM_DISPLAY_MANAGED)) {
+                                 char *session_class;
++                                gboolean session_registered = FALSE;
+ 
+                                 g_object_get (display,
+                                               "session-class", &session_class,
++                                              "session-registered", &session_registered,
+                                               NULL);
+-                                if (g_strcmp0 (session_class, "greeter") == 0)
++                                if (g_strcmp0 (session_class, "greeter") == 0 && !session_registered)
+                                         set_up_session (manager, display);
+                                 g_free (session_class);
+                         }
+-- 
+2.49.0
+

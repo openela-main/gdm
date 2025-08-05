@@ -11,7 +11,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.1
-Release: 28%{?dist}
+Release: 30%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -55,10 +55,14 @@ Patch90004: 0004-data-Use-latest-upstream-udev-rules.patch
 
 Patch100001: 0001-gdm-session-Force-reuse-vt-mode-for-legacy-Xorg-mode.patch
 Patch100002: 0002-local-display-factory-Fix-user-switching-with-legacy.patch
+Patch100003: 0003-local-display-factory-Ensure-displays-are-properly-h.patch
+Patch100004: 0004-local-display-factory-Return-a-session-type-on-legac.patch
 
 Patch110001: 0001-display-Add-new-FAILING-state.patch
 Patch110002: 0002-manager-Quit-plymouth-at-first-sign-of-failure.patch
 Patch110003: 0003-manager-Quit-plymouth-synchronously.patch
+
+Patch120001: 0001-session-Fix-memory-leak-on-new-outside-connection.patch
 
 # Non-upstreamable workarounds
 Patch66610001: 0001-data-reap-gdm-sessions-on-shutdown.patch
@@ -364,6 +368,18 @@ dconf update || :
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
+* Fri Jun 20 2025 Joan Torres <joantolo@redhat.com> - 40.1-30
+- Fix leak on new connections
+  Resolves: RHEL-98725
+
+* Thu Jun 12 2025 Joan Torres <joantolo@redhat.com> - 40.1-29
+- Fix legacy-xorg session switching
+  The fix that intended to fix the issue wasn't complete and also,
+  introduced a bug on user switching for non legacy-xorg servers.
+  This fix addresses both issues.
+- Avoid waiting 10s when starting GDM in legacy-xorg mode
+  Resolves: RHEL-97492
+
 * Fri Mar 07 2025 Tomas Pelka - 40.1-28
 - Use systemd sysusers config to create user and group
   Resolves: RHEL-78738

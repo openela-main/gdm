@@ -13,37 +13,10 @@ of display servers.
  3 files changed, 13 insertions(+), 6 deletions(-)
 
 diff --git a/common/gdm-address.c b/common/gdm-address.c
-index a8b73e286..3a507d0af 100644
+index a8b73e2..3a507d0 100644
 --- a/common/gdm-address.c
 +++ b/common/gdm-address.c
-@@ -107,61 +107,61 @@ gdm_address_new_from_sockaddr (struct sockaddr *sa,
- 
-         g_return_val_if_fail (sa != NULL, NULL);
-         g_return_val_if_fail (size >= sizeof (struct sockaddr), NULL);
-         g_return_val_if_fail (size <= sizeof (struct sockaddr_storage), NULL);
- 
-         addr = g_new0 (GdmAddress, 1);
-         addr->ss = g_new0 (struct sockaddr_storage, 1);
-         memcpy (addr->ss, sa, size);
- 
-         return addr;
- }
- 
- /**
-  * gdm_address_get_sockaddr_storage:
-  * @address: A #GdmAddress
-  *
-  * This function tanslates @address into a equivalent
-  * sockaddr_storage
-  *
-  * Return value: A newly allocated sockaddr_storage structure the caller must free
-  * or %NULL if @address did not point to a valid #GdmAddress.
-  **/
- struct sockaddr_storage *
- gdm_address_get_sockaddr_storage (GdmAddress *address)
- {
-         struct sockaddr_storage *ss;
- 
+@@ -134,7 +134,7 @@ gdm_address_get_sockaddr_storage (GdmAddress *address)
          g_return_val_if_fail (address != NULL, NULL);
          g_return_val_if_fail (address->ss != NULL, NULL);
  
@@ -52,61 +25,7 @@ index a8b73e286..3a507d0af 100644
  
          return ss;
  }
- 
- struct sockaddr_storage *
- gdm_address_peek_sockaddr_storage (GdmAddress *address)
- {
-         g_return_val_if_fail (address != NULL, NULL);
- 
-         return address->ss;
- }
- 
- static gboolean
- v4_v4_equal (const struct sockaddr_in *a,
-              const struct sockaddr_in *b)
- {
-         return a->sin_addr.s_addr == b->sin_addr.s_addr;
- }
- 
- #ifdef ENABLE_IPV6
- static gboolean
- v6_v6_equal (struct sockaddr_in6 *a,
-              struct sockaddr_in6 *b)
- {
-         return IN6_ARE_ADDR_EQUAL (&a->sin6_addr, &b->sin6_addr);
- }
- #endif
- 
- #define SA(__s)    ((struct sockaddr *) __s)
- #define SIN(__s)   ((struct sockaddr_in *) __s)
-@@ -502,50 +502,50 @@ gdm_address_is_local (GdmAddress *address)
- 
-         while (list != NULL) {
-                 GdmAddress *addr = list->data;
- 
-                 if (gdm_address_equal (address, addr)) {
-                         return TRUE;
-                 }
- 
-                 list = list->next;
-         }
- 
-         return FALSE;
- }
- 
- /**
-  * gdm_address_copy:
-  * @address: A #GdmAddress.
-  *
-  * Duplicates @address.
-  *
-  * Return value: Duplicated @address or %NULL if @address was not valid.
-  **/
- GdmAddress *
- gdm_address_copy (GdmAddress *address)
- {
-         GdmAddress *addr;
- 
+@@ -529,7 +529,7 @@ gdm_address_copy (GdmAddress *address)
          g_return_val_if_fail (address != NULL, NULL);
  
          addr = g_new0 (GdmAddress, 1);
@@ -115,54 +34,11 @@ index a8b73e286..3a507d0af 100644
  
          return addr;
  }
- 
- /**
-  * gdm_address_free:
-  * @address: A #GdmAddress.
-  *
-  * Frees the memory allocated for @address.
-  **/
- void
- gdm_address_free (GdmAddress *address)
- {
-         g_return_if_fail (address != NULL);
- 
-         g_free (address->ss);
-         g_free (address);
- }
- 
 diff --git a/daemon/gdm-manager.c b/daemon/gdm-manager.c
-index 08c3cc177..100b967fb 100644
+index 7a68d52..23734e8 100644
 --- a/daemon/gdm-manager.c
 +++ b/daemon/gdm-manager.c
-@@ -1551,70 +1551,75 @@ on_display_status_changed (GdmDisplay *display,
- 
-         g_object_get (display,
-                       "is-local", &display_is_local,
-                       NULL);
-         quit_plymouth = display_is_local && manager->priv->plymouth_is_running;
- #endif
- 
-         g_object_get (display,
-                       "x11-display-number", &display_number,
-                       "session-type", &session_type,
-                       "doing-initial-setup", &doing_initial_setup,
-                       NULL);
- 
-         status = gdm_display_get_status (display);
- 
-         switch (status) {
-                 case GDM_DISPLAY_PREPARED:
-                 case GDM_DISPLAY_MANAGED:
-                         if ((display_number == -1 && status == GDM_DISPLAY_PREPARED) ||
-                             (display_number != -1 && status == GDM_DISPLAY_MANAGED)) {
-                                 char *session_class;
- 
-                                 g_object_get (display,
-                                               "session-class", &session_class,
-                                               NULL);
-                                 if (g_strcmp0 (session_class, "greeter") == 0)
-                                         set_up_session (manager, display);
+@@ -1545,6 +1545,8 @@ on_display_status_changed (GdmDisplay *display,
                                  g_free (session_class);
                          }
                          break;
@@ -171,10 +47,7 @@ index 08c3cc177..100b967fb 100644
                  case GDM_DISPLAY_FAILED:
                  case GDM_DISPLAY_UNMANAGED:
                  case GDM_DISPLAY_FINISHED:
- #ifdef WITH_PLYMOUTH
-                         if (quit_plymouth) {
-                                 plymouth_quit_without_transition ();
-                                 manager->priv->plymouth_is_running = FALSE;
+@@ -1555,6 +1557,9 @@ on_display_status_changed (GdmDisplay *display,
                          }
  #endif
  
@@ -184,65 +57,11 @@ index 08c3cc177..100b967fb 100644
                          g_object_set_data (G_OBJECT (display), "gdm-user-session", NULL);
  
                          if (display == manager->priv->automatic_login_display) {
-                                 g_clear_weak_pointer (&manager->priv->automatic_login_display);
- 
-                                 manager->priv->did_automatic_login = TRUE;
- 
- #ifdef ENABLE_WAYLAND_SUPPORT
-                                 if (g_strcmp0 (session_type, "wayland") != 0 && status == GDM_DISPLAY_FAILED) {
-                                         /* we're going to fall back to X11, so try to autologin again
-                                          */
-                                         manager->priv->did_automatic_login = FALSE;
-                                 }
- #endif
-                         }
-                         break;
-                 default:
-                         break;
-         }
- 
- }
- 
- static void
- on_display_removed (GdmDisplayStore *display_store,
-                     GdmDisplay      *display,
-                     GdmManager      *manager)
- {
-         char    *id;
- 
-         gdm_display_get_id (display, &id, NULL);
 diff --git a/daemon/gdm-xdmcp-display-factory.c b/daemon/gdm-xdmcp-display-factory.c
-index abb58faeb..e82cfe1b4 100644
+index abb58fa..e82cfe1 100644
 --- a/daemon/gdm-xdmcp-display-factory.c
 +++ b/daemon/gdm-xdmcp-display-factory.c
-@@ -891,87 +891,87 @@ gdm_xdmcp_send_unwilling (GdmXdmcpDisplayFactory *factory,
-         header.length = 4 + factory->servhost.length + status.length;
-         header.version = XDM_PROTOCOL_VERSION;
-         XdmcpWriteHeader (&factory->buf, &header);
- 
-         XdmcpWriteARRAY8 (&factory->buf, &factory->servhost);
-         XdmcpWriteARRAY8 (&factory->buf, &status);
-         XdmcpFlush (factory->socket_fd,
-                     &factory->buf,
-                     (XdmcpNetaddr)gdm_address_peek_sockaddr_storage (address),
-                     (int)gdm_sockaddr_len (gdm_address_peek_sockaddr_storage (address)));
- 
-         last_time = time (NULL);
- }
- 
- #define SIN(__s)   ((struct sockaddr_in *) __s)
- #define SIN6(__s)  ((struct sockaddr_in6 *) __s)
- 
- static void
- set_port_for_request (GdmAddress *address,
-                       ARRAY8     *port)
- {
-         struct sockaddr_storage *ss;
- 
-         ss = gdm_address_peek_sockaddr_storage (address);
- 
-         /* we depend on this being 2 elsewhere as well */
-         port->length = 2;
+@@ -918,10 +918,10 @@ set_port_for_request (GdmAddress *address,
  
          switch (ss->ss_family) {
          case AF_INET:
@@ -255,18 +74,7 @@ index abb58faeb..e82cfe1b4 100644
                  break;
          default:
                  port->data = NULL;
-                 break;
-         }
- }
- 
- static void
- set_address_for_request (GdmAddress *address,
-                          ARRAY8     *addr)
- {
-         struct sockaddr_storage *ss;
- 
-         ss = gdm_address_peek_sockaddr_storage (address);
- 
+@@ -940,11 +940,11 @@ set_address_for_request (GdmAddress *address,
          switch (ss->ss_family) {
          case AF_INET:
                  addr->length = sizeof (struct in_addr);
@@ -280,61 +88,7 @@ index abb58faeb..e82cfe1b4 100644
                  break;
          default:
                  addr->length = 0;
-                 addr->data = NULL;
-                 break;
-         }
- 
- }
- 
- static void
- gdm_xdmcp_send_forward_query (GdmXdmcpDisplayFactory  *factory,
-                               IndirectClient          *ic,
-                               GdmAddress              *address,
-                               GdmAddress              *display_address,
-                               ARRAYofARRAY8Ptr         authlist)
- {
-         XdmcpHeader              header;
-         int                      i;
-         ARRAY8                   addr;
-         ARRAY8                   port;
-         char                    *host;
-         char                    *serv;
- 
-         g_assert (ic != NULL);
-         g_assert (ic->chosen_address != NULL);
- 
-         host = NULL;
-         gdm_address_get_numeric_info (ic->chosen_address, &host, NULL);
-         g_debug ("GdmXdmcpDisplayFactory: Sending forward query to %s",
-                    host ? host : "(null)");
-@@ -2063,60 +2063,62 @@ on_display_status_changed (GdmDisplay             *display,
- {
-         int              status;
-         GdmLaunchEnvironment *launch_environment;
-         GdmSession *session;
-         GdmAddress *address;
-         gint32  session_number;
-         int display_number;
- 
-         launch_environment = NULL;
-         g_object_get (display, "launch-environment", &launch_environment, NULL);
- 
-         session = NULL;
-         if (launch_environment != NULL) {
-                 session = gdm_launch_environment_get_session (launch_environment);
-         }
- 
-         status = gdm_display_get_status (display);
- 
-         g_debug ("GdmXdmcpDisplayFactory: xdmcp display status changed: %d", status);
-         switch (status) {
-         case GDM_DISPLAY_FINISHED:
-                 g_object_get (display,
-                               "remote-address", &address,
-                               "x11-display-number", &display_number,
-                               "session-number", &session_number,
-                               NULL);
-                 gdm_xdmcp_send_alive (factory, address, display_number, session_number);
+@@ -2090,6 +2090,8 @@ on_display_status_changed (GdmDisplay             *display,
  
                  gdm_display_factory_queue_purge_displays (GDM_DISPLAY_FACTORY (factory));
                  break;
@@ -343,33 +97,6 @@ index abb58faeb..e82cfe1b4 100644
          case GDM_DISPLAY_FAILED:
                  gdm_display_factory_queue_purge_displays (GDM_DISPLAY_FACTORY (factory));
                  break;
-         case GDM_DISPLAY_UNMANAGED:
-                 if (session != NULL) {
-                         g_signal_handlers_disconnect_by_func (G_OBJECT (session),
-                                                               G_CALLBACK (on_client_disconnected),
-                                                               display);
-                 }
-                 break;
-         case GDM_DISPLAY_PREPARED:
-                 break;
-         case GDM_DISPLAY_MANAGED:
-                 if (session != NULL) {
-                         g_signal_connect_object (G_OBJECT (session),
-                                                  "client-disconnected",
-                                                  G_CALLBACK (on_client_disconnected),
-                                                  display, G_CONNECT_SWAPPED);
-                         g_signal_connect_object (G_OBJECT (session),
-                                                  "disconnected",
-                                                  G_CALLBACK (on_client_disconnected),
-                                                  display, G_CONNECT_SWAPPED);
-                 }
-                 break;
-         default:
-                 g_assert_not_reached ();
-                 break;
-         }
- 
-         g_clear_object (&launch_environment);
 -- 
 2.44.0
 
