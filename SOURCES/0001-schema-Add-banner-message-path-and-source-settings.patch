@@ -1,0 +1,63 @@
+From 8e77b79f78111f67cf42acfad57ad2a7dc510dc7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Fri, 22 Nov 2024 16:23:58 +0100
+Subject: [PATCH] schema: Add `banner-message-path` and `-source` settings
+
+The new settings allows reading the banner message from a file
+instead of GSettings. This is mainly useful for `/etc/motd`
+and similar mechanisms, to show the same message for both
+graphical and non-graphical logins.
+---
+ data/org.gnome.login-screen.gschema.xml | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/data/org.gnome.login-screen.gschema.xml b/data/org.gnome.login-screen.gschema.xml
+index 7b5c54d1b..5a547e9b8 100644
+--- a/data/org.gnome.login-screen.gschema.xml
++++ b/data/org.gnome.login-screen.gschema.xml
+@@ -1,5 +1,10 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <schemalist gettext-domain="gdm">
++  <enum id="org.gnome.login-screen.BannerSource">
++    <value value="1" nick="settings"/>
++    <value value="2" nick="file"/>
++  </enum>
++
+   <schema id="org.gnome.login-screen" path="/org/gnome/login-screen/">
+     <key name="enable-fingerprint-authentication" type="b">
+       <default>true</default>
+@@ -70,6 +75,15 @@
+         Set to true to show the banner message text.
+       </description>
+     </key>
++    <key name="banner-message-source" enum="org.gnome.login-screen.BannerSource">
++      <default>"settings"</default>
++      <summary>
++        Banner message source
++      </summary>
++      <description>
++        The source of the text banner message on the login screen.
++      </description>
++    </key>
+     <key name="banner-message-text" type="s">
+       <default>''</default>
+       <summary>
+@@ -79,6 +93,15 @@
+         Text banner message to show in the login window.
+       </description>
+     </key>
++    <key name="banner-message-path" type="s">
++      <default>''</default>
++      <summary>
++        Banner message path
++      </summary>
++      <description>
++        Path to text file with banner message to show in the login window.
++      </description>
++    </key>
+     <key name="disable-restart-buttons" type="b">
+       <default>false</default>
+       <summary>
+-- 
+2.48.1
+

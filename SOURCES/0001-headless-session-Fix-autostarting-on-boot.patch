@@ -1,0 +1,28 @@
+From e938a72b8ee65b7db2ad76f63dc3f77713871a82 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 3 Jul 2025 12:09:40 +0200
+Subject: [PATCH] headless-session: Fix autostarting on boot
+
+Make it wanted by graphical.target, and make sure it launches after gdm.
+---
+ data/gnome-headless-session@.service | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/data/gnome-headless-session@.service b/data/gnome-headless-session@.service
+index 269d16288..cba7526f8 100644
+--- a/data/gnome-headless-session@.service
++++ b/data/gnome-headless-session@.service
+@@ -1,6 +1,10 @@
+ [Unit]
+ Description=Headless desktop session
++After=multi-user.target rescue.service rescue.target display-manager.service
+ 
+ [Service]
+ ExecStart=/usr/libexec/gdm-headless-login-session --user=%i
+ Restart=on-failure
++
++[Install]
++WantedBy=graphical.target
+-- 
+2.49.0
+
