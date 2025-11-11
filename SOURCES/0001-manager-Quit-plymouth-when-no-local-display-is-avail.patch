@@ -1,0 +1,107 @@
+From d2c0213ba03004c42cb474a543ca91042de570e0 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Tue, 15 Jul 2025 16:19:01 +0200
+Subject: [PATCH] manager: Quit plymouth when no local display is available
+
+In this case plymouth is not needed and it needs to quit. This is
+necessary to allow reaching graphical.target so that the user can
+log in at least at serial console.
+---
+ daemon/gdm-local-display-factory.c | 23 ++++++++++++++++++++++-
+ daemon/gdm-manager.c               | 17 +++++++++++++++++
+ 2 files changed, 39 insertions(+), 1 deletion(-)
+
+diff --git a/daemon/gdm-local-display-factory.c b/daemon/gdm-local-display-factory.c
+index 3e77bf85b..e22f95fb8 100644
+--- a/daemon/gdm-local-display-factory.c
++++ b/daemon/gdm-local-display-factory.c
+@@ -96,6 +96,13 @@ enum {
+         PROP_0,
+ };
+ 
++enum {
++        GRAPHICS_UNSUPPORTED,
++        LAST_SIGNAL,
++};
++
++static guint signals [LAST_SIGNAL] = { 0 };
++
+ static void     gdm_local_display_factory_class_init    (GdmLocalDisplayFactoryClass *klass);
+ static void     gdm_local_display_factory_init          (GdmLocalDisplayFactory      *factory);
+ static void     gdm_local_display_factory_finalize      (GObject                     *object);
+@@ -937,8 +944,11 @@ ensure_display_for_seat (GdmLocalDisplayFactory *factory,
+                 }
+         }
+ 
+-        if (!seat_supports_graphics)
++        if (!seat_supports_graphics) {
++                if (is_seat0)
++                        g_signal_emit (factory, signals[GRAPHICS_UNSUPPORTED], 0);
+                 return;
++        }
+ 
+         g_assert (session_types != NULL);
+ 
+@@ -1676,6 +1686,17 @@ gdm_local_display_factory_class_init (GdmLocalDisplayFactoryClass *klass)
+ 
+         factory_class->start = gdm_local_display_factory_start;
+         factory_class->stop = gdm_local_display_factory_stop;
++
++        signals [GRAPHICS_UNSUPPORTED] =
++                g_signal_new ("graphics-unsupported",
++                              G_OBJECT_CLASS_TYPE (object_class),
++                              G_SIGNAL_RUN_FIRST,
++                              0,
++                              NULL,
++                              NULL,
++                              NULL,
++                              G_TYPE_NONE,
++                              0);
+ }
+ 
+ static void
+diff --git a/daemon/gdm-manager.c b/daemon/gdm-manager.c
+index f73bccf61..0df57939b 100644
+--- a/daemon/gdm-manager.c
++++ b/daemon/gdm-manager.c
+@@ -2619,6 +2619,16 @@ gdm_manager_get_displays (GdmManager *manager,
+         return TRUE;
+ }
+ 
++static void
++on_graphics_unsupported (GdmLocalDisplayFactory *factory,
++                         GdmManager             *manager)
++{
++        if (manager->plymouth_is_running) {
++                plymouth_quit_without_transition ();
++                manager->plymouth_is_running = FALSE;
++        }
++}
++
+ void
+ gdm_manager_stop (GdmManager *manager)
+ {
+@@ -2628,6 +2638,9 @@ gdm_manager_stop (GdmManager *manager)
+ 
+         if (manager->local_factory != NULL) {
+                 gdm_display_factory_stop (GDM_DISPLAY_FACTORY (manager->local_factory));
++                g_signal_handlers_disconnect_by_func (manager->local_factory,
++                                                      G_CALLBACK (on_graphics_unsupported),
++                                                      manager);
+         }
+ 
+ #ifdef HAVE_LIBXDMCP
+@@ -2655,6 +2668,10 @@ gdm_manager_start (GdmManager *manager)
+ #endif
+         if (!manager->xdmcp_enabled || manager->show_local_greeter) {
+                 gdm_display_factory_start (GDM_DISPLAY_FACTORY (manager->local_factory));
++                g_signal_connect (manager->local_factory,
++                                  "graphics-unsupported",
++                                  G_CALLBACK (on_graphics_unsupported),
++                                  manager);
+         }
+ 
+         /* Accept remote connections */
+-- 
+2.50.1
+
