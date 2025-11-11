@@ -11,7 +11,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.1
-Release: 37%{?dist}
+Release: 38%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -373,6 +373,10 @@ dconf update || :
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
+* Thu Oct 2 2025 Joan Torres Lopez <joantolo@redhat.com> - 40.1-38
+- Fix issue on conflicting sessions when they are remote
+  Resolves: RHEL-123357
+
 * Thu Aug 21 2025 Joan Torres Lopez <joantolo@redhat.com> - 40.1-37
 - Fix precedence order when loading sessions
   Resolves: RHEL-4133

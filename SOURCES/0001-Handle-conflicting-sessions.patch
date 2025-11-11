@@ -73,7 +73,7 @@ index 9c10adff3..051420ac8 100644
 +        if (res < 0)
 +                return FALSE;
 +
-+        return g_str_equal (seat_id, session_seat);
++        return g_strcmp0 (seat_id, session_seat) == 0;
 +}
 +
 +static char **
@@ -220,7 +220,7 @@ diff --git a/daemon/gdm-manager.c b/daemon/gdm-manager.c
 index 051420ac8..4f68448e3 100644
 --- a/daemon/gdm-manager.c
 +++ b/daemon/gdm-manager.c
-@@ -2152,6 +2152,30 @@ on_session_reauthenticated (GdmSession *session,
+@@ -2152,6 +2152,37 @@ on_session_reauthenticated (GdmSession *session,
          switch_to_compatible_user_session (manager, session, fail_if_already_switched);
  }
  
@@ -241,8 +241,15 @@ index 051420ac8..4f68448e3 100644
 +                return;
 +        }
 +
-+
 +        for (i = 0; i < g_strv_length (session_ids); i++) {
++                // Don't kill conflicting session if it's not tracked,
++                // this ensures the new session isn't killed (because
++                // it's considered a conflicting session).
++                if (!gdm_display_store_find (manager->priv->display_store,
++                                            lookup_by_session_id,
++                                            (gpointer) session_ids[i]))
++                        continue;
++
 +                if (!gdm_terminate_session_by_id (manager->priv->connection, NULL, session_ids[i]))
 +                        g_warning ("Failed to terminate conflicting session: %s", session_ids[i]);
 +        }
