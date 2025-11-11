@@ -11,7 +11,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.1
-Release: 30%{?dist}
+Release: 37%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -62,7 +62,13 @@ Patch110001: 0001-display-Add-new-FAILING-state.patch
 Patch110002: 0002-manager-Quit-plymouth-at-first-sign-of-failure.patch
 Patch110003: 0003-manager-Quit-plymouth-synchronously.patch
 
-Patch120001: 0001-session-Fix-memory-leak-on-new-outside-connection.patch
+Patch120001: 0001-meson-Define-missing-HAVE_LIBAUDIT.patch
+
+Patch130001: 0001-Handle-conflicting-sessions.patch
+
+Patch140001: 0001-session-Fix-memory-leak-on-new-outside-connection.patch
+
+Patch150001: 0001-libgdm-Don-t-collect-twice-sessions-on-usr-share.patch
 
 # Non-upstreamable workarounds
 Patch66610001: 0001-data-reap-gdm-sessions-on-shutdown.patch
@@ -78,7 +84,6 @@ Patch99910001: 0001-Honor-initial-setup-being-disabled-by-distro-install.patch
 Patch99930001: 0001-data-add-system-dconf-databases-to-gdm-profile.patch
 
 Patch99950001: 0001-data-Disable-network-configuration-on-login-screen.patch
-
 
 BuildRequires: accountsservice-devel
 BuildRequires: audit-libs-devel >= %{libauditver}
@@ -368,21 +373,52 @@ dconf update || :
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
-* Fri Jun 20 2025 Joan Torres <joantolo@redhat.com> - 40.1-30
-- Fix leak on new connections
-  Resolves: RHEL-98725
+* Thu Aug 21 2025 Joan Torres Lopez <joantolo@redhat.com> - 40.1-37
+- Fix precedence order when loading sessions
+  Resolves: RHEL-4133
 
-* Thu Jun 12 2025 Joan Torres <joantolo@redhat.com> - 40.1-29
+* Thu Jul 31 2025 Joan Torres <joantolo@redhat.com> - 40.1-36
+- Remove adding -nocursor option. Using a cursor-theme already allows this.
+  Related: RHEL-81194
+
+* Wed Jul 16 2025 Joan Torres <joantolo@redhat.com> - 40.1-35
+- Instead of allowing adding custom parameters to Xorg,
+  only allow adding -nocursor. Allowing adding custom parameters
+  is a potential security issue.
+  Related: RHEL-81194
+
+* Mon Jul 14 2025 Joan Torres <joantolo@redhat.com> - 40.1-34
+- Allow adding custom parameters to Xorg
+  Resolves: RHEL-81194
+
+* Fri Jun 20 2025 Joan Torres <joantolo@redhat.com> - 40.1-33
+- Fix leak on new connections
+  Resolves: RHEL-98562
+
+* Thu Jun 19 2025 Joan Torres <joantolo@redhat.com> - 40.1-32
+- Leave session-opened signature the same as before and use a new
+  session-opened-with-session-id signal to keep ABI compatibility
+  Related: RHEL-46383
+
+* Thu Jun 12 2025 Joan Torres <joantolo@redhat.com> - 40.1-31
 - Fix legacy-xorg session switching
   The fix that intended to fix the issue wasn't complete and also,
   introduced a bug on user switching for non legacy-xorg servers.
   This fix addresses both issues.
 - Avoid waiting 10s when starting GDM in legacy-xorg mode
-  Resolves: RHEL-97492
+  Resolves: RHEL-72694
+
+* Fri May 09 2025 Joan Torres <joantolo@redhat.com> - 40.1-30
+- Handle conflicting sessions on greeter and allow terminating them
+  Resolves: RHEL-46383
+
+* Wed May 07 2025 Joan Torres <joantolo@redhat.com> - 40.1-29
+- Define missing HAVE_LIBAUDIT
+  Resolves: RHEL-89936
 
 * Fri Mar 07 2025 Tomas Pelka - 40.1-28
 - Use systemd sysusers config to create user and group
-  Resolves: RHEL-78738
+  Resolves: RHEL-82643
 
 * Wed Jul 24 2024 Ray Strode <rstrode@redhat.com> - 40.1-27
 - More fixes with wayland->xorg fallback

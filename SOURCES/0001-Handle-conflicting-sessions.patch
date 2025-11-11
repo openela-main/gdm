@@ -1,0 +1,415 @@
+From e204ee23d7626ee09684494b49774d8fae4d6056 Mon Sep 17 00:00:00 2001
+From: Joan Torres <joantolo@redhat.com>
+Date: Thu, 8 May 2025 11:27:03 +0200
+Subject: [PATCH 1/3] manager: Use full verification on incompatible login
+ session
+
+Two sessions are incompatible if they don't share the same
+seat_id.
+
+From a login session, when the logged in user session was previously
+started and is incompatible with this login session, don't do the
+reauthentication process and do the full verification instead. This will
+be used in next commits to shutdown the previously started session and
+start a new session.
+
+Part-of<https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/233>
+---
+ daemon/gdm-manager.c | 92 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 92 insertions(+)
+
+diff --git a/daemon/gdm-manager.c b/daemon/gdm-manager.c
+index 9c10adff3..051420ac8 100644
+--- a/daemon/gdm-manager.c
++++ b/daemon/gdm-manager.c
+@@ -28,6 +28,7 @@
+ #include <signal.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
++#include <systemd/sd-login.h>
+ 
+ #include <glib.h>
+ #include <glib/gi18n.h>
+@@ -1116,6 +1117,85 @@ open_temporary_reauthentication_channel (GdmManager            *self,
+         return g_strdup (address);
+ }
+ 
++static gboolean
++is_session_graphical (const char *session_id)
++{
++        const char * const graphical_session_types[] = { "wayland", "x11",  NULL };
++        int res;
++        g_autofree char *type = NULL;
++
++        res = sd_session_get_type (session_id, &type);
++        if (res < 0)
++                return FALSE;
++
++        return g_strv_contains (graphical_session_types, type);
++}
++
++static gboolean
++is_session_active (const char *session_id)
++{
++        const char * const active_states[] = { "active", "online", NULL };
++        int res;
++        g_autofree char *state = NULL;
++
++        res = sd_session_get_state (session_id, &state);
++        if (res < 0)
++                return FALSE;
++
++        return g_strv_contains (active_states, state);
++}
++
++static gboolean
++is_session_on_seat (const char *session_id,
++                    const char *seat_id)
++{
++        int res;
++        g_autofree char *session_seat = NULL;
++
++        res = sd_session_get_seat (session_id, &session_seat);
++        if (res < 0)
++                return FALSE;
++
++        return g_str_equal (seat_id, session_seat);
++}
++
++static char **
++find_conflicting_sessions (const char *username,
++                           const char *seat_id)
++{
++        struct passwd *passwd_entry;
++        g_auto (GStrv) sessions = NULL;
++        g_autoptr (GStrvBuilder) builder = NULL;
++        int n_sessions;
++        int i;
++        uid_t uid;
++
++        gdm_get_pwent_for_name (username, &passwd_entry);
++        if (passwd_entry == NULL) {
++                return FALSE;
++        }
++
++        builder = g_strv_builder_new ();
++
++        uid = passwd_entry->pw_uid;
++
++        n_sessions = sd_uid_get_sessions (uid, 0, &sessions);
++        for (i = n_sessions - 1; i >= 0; i--) {
++                if (!is_session_graphical (sessions[i]))
++                        continue;
++
++                if (!is_session_active (sessions[i]))
++                        continue;
++
++                if (is_session_on_seat (sessions[i], seat_id))
++                        continue;
++
++                g_strv_builder_add (builder, g_strdup (sessions[i]));
++        }
++
++        return g_strv_builder_end (builder);
++}
++
+ static gboolean
+ gdm_manager_handle_open_reauthentication_channel (GdmDBusManager        *manager,
+                                                   GDBusMethodInvocation *invocation,
+@@ -1154,6 +1234,18 @@ gdm_manager_handle_open_reauthentication_channel (GdmDBusManager        *manager
+                                                          username,
+                                                          seat_id,
+                                                          NULL);
++                if (session == NULL) {
++                        g_auto (GStrv) conflicting_sessions = NULL;
++
++                        conflicting_sessions = find_conflicting_sessions (username, seat_id);
++                        if (g_strv_length (conflicting_sessions) != 0) {
++                                g_dbus_method_invocation_return_error_literal (invocation,
++                                                                               G_DBUS_ERROR,
++                                                                               G_DBUS_ERROR_ACCESS_DENIED,
++                                                                               "Found incompatible user session");
++                                return TRUE;
++                        }
++                }
+         } else {
+                 g_debug ("GdmManager: looking for user session on display");
+                 session = get_user_session_for_display (display);
+-- 
+2.49.0
+
+
+From 239aefa42bcba99fa7eac12b98b4dd7f64ef9608 Mon Sep 17 00:00:00 2001
+From: Joan Torres <joantolo@redhat.com>
+Date: Thu, 8 May 2025 11:50:26 +0200
+Subject: [PATCH 2/3] session: Stop conflicting session
+
+This happens when at the login gnome-shell it's been displayed the dialog
+requesting to logout the existing session. When the user chose to stop
+the existing session it will use the method "StopConflictingSession"
+and then the manager kills that session using logind interface.
+
+Part-of<https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/233>
+---
+ common/gdm-common.c    | 32 ++++++++++++++++++++++++++++++++
+ common/gdm-common.h    |  4 ++++
+ daemon/gdm-manager.c   | 28 ++++++++++++++++++++++++++++
+ daemon/gdm-session.c   | 41 +++++++++++++++++++++++++++++++++++++++++
+ daemon/gdm-session.xml |  2 ++
+ 5 files changed, 107 insertions(+)
+
+diff --git a/common/gdm-common.c b/common/gdm-common.c
+index 92029027b..d5290acdd 100644
+--- a/common/gdm-common.c
++++ b/common/gdm-common.c
+@@ -381,6 +381,38 @@ gdm_activate_session_by_id (GDBusConnection *connection,
+         return TRUE;
+ }
+ 
++gboolean
++gdm_terminate_session_by_id (GDBusConnection *connection,
++                             GCancellable    *cancellable,
++                             const char      *session_id)
++{
++        GError *local_error = NULL;
++        GVariant *reply;
++
++        g_return_val_if_fail (G_IS_DBUS_CONNECTION (connection), FALSE);
++        g_return_val_if_fail (session_id != NULL, FALSE);
++
++        reply = g_dbus_connection_call_sync (connection,
++                                             "org.freedesktop.login1",
++                                             "/org/freedesktop/login1",
++                                             "org.freedesktop.login1.Manager",
++                                             "TerminateSession",
++                                             g_variant_new ("(s)", session_id),
++                                             NULL,
++                                             G_DBUS_CALL_FLAGS_NONE,
++                                             -1,
++                                             cancellable, &local_error);
++        if (reply == NULL) {
++                g_warning ("Unable to terminate session: %s", local_error->message);
++                g_error_free (local_error);
++                return FALSE;
++        }
++
++        g_variant_unref (reply);
++
++        return TRUE;
++}
++
+ gboolean
+ gdm_get_login_window_session_id (const char  *seat_id,
+                                  char       **session_id)
+diff --git a/common/gdm-common.h b/common/gdm-common.h
+index c42f556a4..ea012dc88 100644
+--- a/common/gdm-common.h
++++ b/common/gdm-common.h
+@@ -91,6 +91,10 @@ gboolean      gdm_activate_session_by_id (GDBusConnection *connection,
+                                           const char      *seat_id,
+                                           const char      *session_id);
+ 
++gboolean gdm_terminate_session_by_id      (GDBusConnection *connection,
++                                           GCancellable    *cancellable,
++                                           const char      *session_id);
++
+ void          gdm_load_env_d              (GdmLoadEnvVarFunc load_env_func,
+                                            GdmExpandVarFunc  expand_func,
+                                            gpointer          user_data);
+diff --git a/daemon/gdm-manager.c b/daemon/gdm-manager.c
+index 051420ac8..4f68448e3 100644
+--- a/daemon/gdm-manager.c
++++ b/daemon/gdm-manager.c
+@@ -2152,6 +2152,30 @@ on_session_reauthenticated (GdmSession *session,
+         switch_to_compatible_user_session (manager, session, fail_if_already_switched);
+ }
+ 
++static void
++on_stop_conflicting_session (GdmSession *login_session,
++                             const char *username,
++                             GdmManager *manager)
++{
++        g_auto (GStrv) session_ids = NULL;
++        const char *seat_id;
++        int i;
++
++        seat_id = gdm_session_get_display_seat_id (login_session);
++
++        session_ids = find_conflicting_sessions (username, seat_id);
++        if (g_strv_length (session_ids) == 0) {
++                g_warning ("Couldn't find conflicting sessions for user");
++                return;
++        }
++
++
++        for (i = 0; i < g_strv_length (session_ids); i++) {
++                if (!gdm_terminate_session_by_id (manager->priv->connection, NULL, session_ids[i]))
++                        g_warning ("Failed to terminate conflicting session: %s", session_ids[i]);
++        }
++}
++
+ static void
+ on_session_client_ready_for_session_to_start (GdmSession      *session,
+                                               const char      *service_name,
+@@ -2443,6 +2467,10 @@ create_user_session_for_display (GdmManager *manager,
+                           "reauthenticated",
+                           G_CALLBACK (on_session_reauthenticated),
+                           manager);
++        g_signal_connect (session,
++                          "stop-conflicting-session",
++                          G_CALLBACK (on_stop_conflicting_session),
++                          manager);
+         g_signal_connect (session,
+                           "client-ready-for-session-to-start",
+                           G_CALLBACK (on_session_client_ready_for_session_to_start),
+diff --git a/daemon/gdm-session.c b/daemon/gdm-session.c
+index a010cecf5..7ea6c3fb7 100644
+--- a/daemon/gdm-session.c
++++ b/daemon/gdm-session.c
+@@ -137,6 +137,7 @@ struct _GdmSession
+ 
+         guint32              is_program_session : 1;
+         guint32              display_is_initial : 1;
++        guint32              is_opened : 1;
+ };
+ 
+ enum {
+@@ -177,6 +178,7 @@ enum {
+         SESSION_DIED,
+         REAUTHENTICATION_STARTED,
+         REAUTHENTICATED,
++        STOP_CONFLICTING_SESSION,
+         LAST_SIGNAL
+ };
+ 
+@@ -895,6 +897,8 @@ on_opened (GdmDBusWorker *worker,
+ 
+                 g_debug ("GdmSession: Emitting 'session-opened' signal");
+                 g_signal_emit (self, signals[SESSION_OPENED], 0, service_name, session_id);
++
++                self->is_opened = TRUE;
+         } else {
+                 report_and_stop_conversation (self, service_name, error);
+ 
+@@ -1572,6 +1576,28 @@ gdm_session_handle_get_timed_login_details (GdmDBusGreeter        *greeter_inter
+         return TRUE;
+ }
+ 
++static gboolean
++gdm_session_handle_client_stop_conflicting_session (GdmDBusGreeter        *greeter_interface,
++                                                    GDBusMethodInvocation *invocation,
++                                                    GdmSession            *self)
++{
++        if (!self->is_opened) {
++                g_dbus_method_invocation_return_error_literal (invocation, G_DBUS_ERROR,
++                                                               G_DBUS_ERROR_ACCESS_DENIED,
++                                                               "Can't stop conflicting session if this session is not opened yet");
++                return TRUE;
++        }
++
++        g_signal_emit (self, signals[STOP_CONFLICTING_SESSION], 0, self->selected_user);
++
++        if (self->greeter_interface != NULL) {
++                gdm_dbus_greeter_complete_stop_conflicting_session (self->greeter_interface,
++                                                                    invocation);
++        }
++
++        return TRUE;
++}
++
+ static gboolean
+ gdm_session_handle_client_begin_auto_login (GdmDBusGreeter        *greeter_interface,
+                                             GDBusMethodInvocation *invocation,
+@@ -1675,6 +1701,10 @@ export_greeter_interface (GdmSession      *self,
+                           "handle-get-timed-login-details",
+                           G_CALLBACK (gdm_session_handle_get_timed_login_details),
+                           self);
++        g_signal_connect (greeter_interface,
++                          "handle-stop-conflicting-session",
++                          G_CALLBACK (gdm_session_handle_client_stop_conflicting_session),
++                          self);
+ 
+         g_dbus_interface_skeleton_export (G_DBUS_INTERFACE_SKELETON (greeter_interface),
+                                           connection,
+@@ -3943,6 +3973,17 @@ gdm_session_class_init (GdmSessionClass *session_class)
+                               g_cclosure_marshal_VOID__VOID,
+                               G_TYPE_NONE,
+                               0);
++        signals [STOP_CONFLICTING_SESSION] =
++                g_signal_new ("stop-conflicting-session",
++                              GDM_TYPE_SESSION,
++                              G_SIGNAL_RUN_FIRST,
++                              0,
++                              NULL,
++                              NULL,
++                              NULL,
++                              G_TYPE_NONE,
++                              1,
++                              G_TYPE_STRING);
+ 
+         g_object_class_install_property (object_class,
+                                          PROP_VERIFICATION_MODE,
+diff --git a/daemon/gdm-session.xml b/daemon/gdm-session.xml
+index 137be5e27..e5a1e4bb3 100644
+--- a/daemon/gdm-session.xml
++++ b/daemon/gdm-session.xml
+@@ -114,6 +114,8 @@
+       <arg name="service_name" direction="in" type="s"/>
+       <arg name="should_start_session" direction="in" type="b"/>
+     </method>
++    <method name="StopConflictingSession">
++    </method>
+     <signal name="SelectedUserChanged">
+       <arg name="username" type="s"/>
+     </signal>
+-- 
+2.49.0
+
+
+From b70145ecaabe57e947bfb703bbd5d2e7b953609d Mon Sep 17 00:00:00 2001
+From: Joan Torres <joantolo@redhat.com>
+Date: Thu, 8 May 2025 11:52:40 +0200
+Subject: [PATCH 3/3] session: On greeter add SessionOpenedWithSessionId signal
+
+This session_id will be used by the gnome-shell at login session when
+searching if there's already a user session opened, ignoring this one which is
+being opened.
+
+Part-of<https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/233>
+---
+ daemon/gdm-session.c   | 3 +++
+ daemon/gdm-session.xml | 4 ++++
+ 2 files changed, 7 insertions(+)
+
+diff --git a/daemon/gdm-session.c b/daemon/gdm-session.c
+index 8e7c6774a..cd758e18f 100644
+--- a/daemon/gdm-session.c
++++ b/daemon/gdm-session.c
+@@ -976,6 +976,9 @@ on_opened (GdmDBusWorker *worker,
+                 if (self->greeter_interface != NULL) {
+                         gdm_dbus_greeter_emit_session_opened (self->greeter_interface,
+                                                               service_name);
++                        gdm_dbus_greeter_emit_session_opened_with_session_id (self->greeter_interface,
++                                                                              service_name,
++                                                                              session_id);
+                 }
+ 
+                 g_debug ("GdmSession: Emitting 'session-opened' signal");
+diff --git a/daemon/gdm-session.xml b/daemon/gdm-session.xml
+index f22e37c8c..9ba2fb213 100644
+--- a/daemon/gdm-session.xml
++++ b/daemon/gdm-session.xml
+@@ -156,6 +156,10 @@
+     <signal name="SessionOpened">
+       <arg name="service_name" type="s"/>
+     </signal>
++    <signal name="SessionOpenedWithSessionId">
++      <arg name="service_name" type="s"/>
++      <arg name="session_id" type="s"/>
++    </signal>
+     <signal name="Reauthenticated">
+       <arg name="service_name" type="s"/>
+     </signal>
+-- 
+2.49.0
+

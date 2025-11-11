@@ -1,0 +1,167 @@
+From b52648f991e4537b18620444f4d7b2f9663aed33 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Mon, 9 Jun 2025 17:00:54 +0200
+Subject: [PATCH 1/2] libgdm: Don't collect twice sessions on /usr/share
+
+Using system_data_dirs already includes /usr/share, so we don't need to
+add it manually.
+---
+ docs/C/index.docbook  | 4 ++--
+ libgdm/gdm-sessions.c | 9 ---------
+ 2 files changed, 2 insertions(+), 11 deletions(-)
+
+diff --git a/docs/C/index.docbook b/docs/C/index.docbook
+index 134b9bc..ab2a87f 100644
+--- a/docs/C/index.docbook
++++ b/docs/C/index.docbook
+@@ -2002,8 +2002,8 @@ AutostartCondition=GNOME /desktop/gnome/applications/at/screen_keyboard_enabled
+         search the following directories in this order to find desktop files:
+         <filename>&lt;etc&gt;/X11/sessions/</filename>,
+         <filename>&lt;dmconfdir&gt;/Sessions</filename>, 
+-        <filename>&lt;share&gt;/xsessions</filename>, and
+-        <filename>&lt;share&gt;/gdm/BuiltInSessions</filename>.  By default the
++        <filename>&lt;share&gt;/gdm/BuiltInSessions</filename>, and
++        <filename>&lt;share&gt;/xsessions</filename>.  By default the
+         <filename>&lt;dmconfdir&gt;</filename> is set to
+         <filename>&lt;etc&gt;/dm/</filename> unless GDM is configured to use
+         a different directory via the "--with-dmconfdir" option.
+diff --git a/libgdm/gdm-sessions.c b/libgdm/gdm-sessions.c
+index f078e04..e4a0e6b 100644
+--- a/libgdm/gdm-sessions.c
++++ b/libgdm/gdm-sessions.c
+@@ -275,7 +275,6 @@ collect_sessions (void)
+                 "/etc/X11/sessions/",
+                 DMCONFDIR "/Sessions/",
+                 DATADIR "/gdm/BuiltInSessions/",
+-                DATADIR "/xsessions/",
+         };
+         g_auto (GStrv) supported_session_types = NULL;
+ 
+@@ -296,20 +295,12 @@ collect_sessions (void)
+         }
+ 
+ #ifdef ENABLE_WAYLAND_SUPPORT
+-        const char *wayland_search_dirs[] = {
+-                DATADIR "/wayland-sessions/",
+-        };
+-
+         wayland_search_array = g_ptr_array_new_with_free_func (g_free);
+ 
+         for (i = 0; system_data_dirs[i]; i++) {
+                 session_dir = g_build_filename (system_data_dirs[i], "wayland-sessions", NULL);
+                 g_ptr_array_add (wayland_search_array, session_dir);
+         }
+-
+-        for (i = 0; i < G_N_ELEMENTS (wayland_search_dirs); i++) {
+-                g_ptr_array_add (wayland_search_array, g_strdup (wayland_search_dirs[i]));
+-        }
+ #endif
+ 
+         if (gdm_available_sessions_map == NULL) {
+-- 
+2.50.1
+
+From ac9d403b5b27cbd8396a696223cd96fbac56f142 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Mon, 9 Jun 2025 17:11:01 +0200
+Subject: [PATCH 2/2] libgdm: Ensure loading session files is done in the right
+ order
+
+Loading session files is done with the following precedence order:
+1. Sessions defined in /etc/X11/sessions/
+2. Sessions defined in <dmconfdir>/Sessions
+3. Built-in sessions in <share>/gdm/BuiltInSessions
+4. X11 sessions in system_data_dirs
+5. Wayland sessions in system_data_dirs
+
+Sessions dirs have precedence in the order they are added to
+dirs_search_array.
+
+This fixes an issue where sessions at system_data_dirs were being added
+before sessions in /etc/.
+---
+ libgdm/gdm-sessions.c | 49 +++++++++++++++++--------------------------
+ 1 file changed, 19 insertions(+), 30 deletions(-)
+
+diff --git a/libgdm/gdm-sessions.c b/libgdm/gdm-sessions.c
+index e4a0e6b..e0d0044 100644
+--- a/libgdm/gdm-sessions.c
++++ b/libgdm/gdm-sessions.c
+@@ -267,8 +267,7 @@ static void
+ collect_sessions (void)
+ {
+         g_autoptr(GHashTable) names_seen_before = NULL;
+-        g_autoptr(GPtrArray) xorg_search_array = NULL;
+-        g_autoptr(GPtrArray) wayland_search_array = NULL;
++        g_autoptr(GPtrArray) dirs_search_array = NULL;
+         gchar      *session_dir = NULL;
+         int         i;
+         const char *xorg_search_dirs[] = {
+@@ -281,26 +280,30 @@ collect_sessions (void)
+         supported_session_types = g_strsplit (g_getenv ("GDM_SUPPORTED_SESSION_TYPES"), ":", -1);
+ 
+         names_seen_before = g_hash_table_new (g_str_hash, g_str_equal);
+-        xorg_search_array = g_ptr_array_new_with_free_func (g_free);
++        dirs_search_array = g_ptr_array_new_with_free_func (g_free);
+ 
+         const gchar * const *system_data_dirs = g_get_system_data_dirs ();
+ 
+-        for (i = 0; system_data_dirs[i]; i++) {
+-                session_dir = g_build_filename (system_data_dirs[i], "xsessions", NULL);
+-                g_ptr_array_add (xorg_search_array, session_dir);
+-        }
++        if (!supported_session_types || g_strv_contains ((const char * const *) supported_session_types, "x11")) {
++                for (i = 0; i < G_N_ELEMENTS (xorg_search_dirs); i++) {
++                        g_ptr_array_add (dirs_search_array, g_strdup (xorg_search_dirs[i]));
++                }
+ 
+-        for (i = 0; i < G_N_ELEMENTS (xorg_search_dirs); i++) {
+-                g_ptr_array_add (xorg_search_array, g_strdup (xorg_search_dirs[i]));
++                for (i = 0; system_data_dirs[i]; i++) {
++                        session_dir = g_build_filename (system_data_dirs[i], "xsessions", NULL);
++                        g_ptr_array_add (dirs_search_array, session_dir);
++                }
+         }
+ 
+ #ifdef ENABLE_WAYLAND_SUPPORT
+-        wayland_search_array = g_ptr_array_new_with_free_func (g_free);
+-
+-        for (i = 0; system_data_dirs[i]; i++) {
+-                session_dir = g_build_filename (system_data_dirs[i], "wayland-sessions", NULL);
+-                g_ptr_array_add (wayland_search_array, session_dir);
++#ifdef ENABLE_USER_DISPLAY_SERVER
++        if (!supported_session_types  || g_strv_contains ((const char * const *) supported_session_types, "wayland")) {
++                for (i = 0; system_data_dirs[i]; i++) {
++                        session_dir = g_build_filename (system_data_dirs[i], "wayland-sessions", NULL);
++                        g_ptr_array_add (dirs_search_array, session_dir);
++                }
+         }
++#endif
+ #endif
+ 
+         if (gdm_available_sessions_map == NULL) {
+@@ -308,22 +311,10 @@ collect_sessions (void)
+                                                                     g_free, (GDestroyNotify)gdm_session_file_free);
+         }
+ 
+-        if (!supported_session_types || g_strv_contains ((const char * const *) supported_session_types, "x11")) {
+-                for (i = 0; i < xorg_search_array->len; i++) {
+-                        collect_sessions_from_directory (g_ptr_array_index (xorg_search_array, i));
+-                }
++        for (i = dirs_search_array->len - 1; i >= 0; i--) {
++                collect_sessions_from_directory (g_ptr_array_index (dirs_search_array, i));
+         }
+ 
+-#ifdef ENABLE_WAYLAND_SUPPORT
+-#ifdef ENABLE_USER_DISPLAY_SERVER
+-        if (!supported_session_types  || g_strv_contains ((const char * const *) supported_session_types, "wayland")) {
+-                for (i = 0; i < wayland_search_array->len; i++) {
+-                        collect_sessions_from_directory (g_ptr_array_index (wayland_search_array, i));
+-                }
+-        }
+-#endif
+-#endif
+-
+         g_hash_table_foreach_remove (gdm_available_sessions_map,
+                                      remove_duplicate_sessions,
+                                      names_seen_before);
