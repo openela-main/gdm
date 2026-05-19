@@ -11,7 +11,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.1
-Release: 41%{?dist}
+Release: 42%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -377,6 +377,10 @@ dconf update || :
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
+* Fri Mar 6 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-42
+- Terminate conflicting sesions started outside of GDM 
+  Resolves: RHEL-4108
+
 * Tue Nov 18 2025 Joan Torres Lopez <joantolo@redhat.com> - 40.1-41
 - Fix recording wtmp/utmp/btmp
   Resolves: RHEL-129305
