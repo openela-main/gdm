@@ -26,7 +26,7 @@ index 134b9bc..ab2a87f 100644
          <filename>&lt;etc&gt;/dm/</filename> unless GDM is configured to use
          a different directory via the "--with-dmconfdir" option.
 diff --git a/libgdm/gdm-sessions.c b/libgdm/gdm-sessions.c
-index f078e04..e4a0e6b 100644
+index d8b4d5c..13067ec 100644
 --- a/libgdm/gdm-sessions.c
 +++ b/libgdm/gdm-sessions.c
 @@ -275,7 +275,6 @@ collect_sessions (void)
@@ -35,9 +35,9 @@ index f078e04..e4a0e6b 100644
                  DATADIR "/gdm/BuiltInSessions/",
 -                DATADIR "/xsessions/",
          };
+         const gchar *supported_session_types_env = NULL;
          g_auto (GStrv) supported_session_types = NULL;
- 
-@@ -296,20 +295,12 @@ collect_sessions (void)
+@@ -300,20 +299,12 @@ collect_sessions (void)
          }
  
  #ifdef ENABLE_WAYLAND_SUPPORT
@@ -58,9 +58,6 @@ index f078e04..e4a0e6b 100644
  #endif
  
          if (gdm_available_sessions_map == NULL) {
--- 
-2.50.1
-
 From ac9d403b5b27cbd8396a696223cd96fbac56f142 Mon Sep 17 00:00:00 2001
 From: Joan Torres Lopez <joantolo@redhat.com>
 Date: Mon, 9 Jun 2025 17:11:01 +0200
@@ -84,7 +81,7 @@ before sessions in /etc/.
  1 file changed, 19 insertions(+), 30 deletions(-)
 
 diff --git a/libgdm/gdm-sessions.c b/libgdm/gdm-sessions.c
-index e4a0e6b..e0d0044 100644
+index 13067ec..4c3f607 100644
 --- a/libgdm/gdm-sessions.c
 +++ b/libgdm/gdm-sessions.c
 @@ -267,8 +267,7 @@ static void
@@ -97,8 +94,8 @@ index e4a0e6b..e0d0044 100644
          gchar      *session_dir = NULL;
          int         i;
          const char *xorg_search_dirs[] = {
-@@ -281,26 +280,30 @@ collect_sessions (void)
-         supported_session_types = g_strsplit (g_getenv ("GDM_SUPPORTED_SESSION_TYPES"), ":", -1);
+@@ -285,26 +284,30 @@ collect_sessions (void)
+         }
  
          names_seen_before = g_hash_table_new (g_str_hash, g_str_equal);
 -        xorg_search_array = g_ptr_array_new_with_free_func (g_free);
@@ -140,7 +137,7 @@ index e4a0e6b..e0d0044 100644
  #endif
  
          if (gdm_available_sessions_map == NULL) {
-@@ -308,22 +311,10 @@ collect_sessions (void)
+@@ -312,22 +315,10 @@ collect_sessions (void)
                                                                      g_free, (GDestroyNotify)gdm_session_file_free);
          }
  

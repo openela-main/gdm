@@ -11,7 +11,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.1
-Release: 38%{?dist}
+Release: 41%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -69,6 +69,10 @@ Patch130001: 0001-Handle-conflicting-sessions.patch
 Patch140001: 0001-session-Fix-memory-leak-on-new-outside-connection.patch
 
 Patch150001: 0001-libgdm-Don-t-collect-twice-sessions-on-usr-share.patch
+
+Patch160001: 0001-Revert-hack-that-quits-plymouth-late.patch
+
+Patch170001: 0001-session-record-Rework-wtmp-utmp-btmp-fields.patch
 
 # Non-upstreamable workarounds
 Patch66610001: 0001-data-reap-gdm-sessions-on-shutdown.patch
@@ -373,6 +377,18 @@ dconf update || :
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
+* Tue Nov 18 2025 Joan Torres Lopez <joantolo@redhat.com> - 40.1-41
+- Fix recording wtmp/utmp/btmp
+  Resolves: RHEL-129305
+
+* Tue Nov 18 2025 Joan Torres Lopez <joantolo@redhat.com> - 40.1-40
+- Now Plymouth will quit even when no monitor is connected.
+  Resolves: RHEL-129215
+
+* Fri Oct 31 2025 Joan Torres Lopez <joantolo@redhat.com> - 40.1-39
+- Fix Handle GDM_SUPPORTED_SESSION_TYPES being unset
+  Resolves: RHEL-117034
+
 * Thu Oct 2 2025 Joan Torres Lopez <joantolo@redhat.com> - 40.1-38
 - Fix issue on conflicting sessions when they are remote
   Resolves: RHEL-123357
