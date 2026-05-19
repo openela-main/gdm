@@ -1,0 +1,50 @@
+From f04dc0418694b20f789479bfd1d88404fd0c5fde Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Fri, 12 Sep 2025 17:24:15 +0200
+Subject: [PATCH] session: Don't report service unavailable error as failed
+ authentication
+
+Service unavailable error happens when authentication is performed
+using gdm-fingerprint and fprintd service is terminated
+(either manually or from a timeout).
+
+In those cases, failed authentications were being reported, making the login
+greeter display something like:
+"There were <x> failed login attempts since the last successful login.".
+
+This fixes it.
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/317>
+---
+ daemon/gdm-session.c | 15 ++++++++++-----
+ 1 file changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/daemon/gdm-session.c b/daemon/gdm-session.c
+index ae6840188..46bd1da9d 100644
+--- a/daemon/gdm-session.c
++++ b/daemon/gdm-session.c
+@@ -259,11 +259,16 @@ on_authenticate_cb (GdmDBusWorker *proxy,
+         if (worked) {
+                 gdm_session_authorize (self, service_name);
+         } else {
+-                g_signal_emit (self,
+-                               signals[AUTHENTICATION_FAILED],
+-                               0,
+-                               service_name,
+-                               conversation->worker_pid);
++                if (!g_error_matches (error,
++                                      GDM_SESSION_WORKER_ERROR,
++                                      GDM_SESSION_WORKER_ERROR_SERVICE_UNAVAILABLE)) {
++                        g_signal_emit (self,
++                                       signals[AUTHENTICATION_FAILED],
++                                       0,
++                                       service_name,
++                                       conversation->worker_pid);
++                }
++
+                 report_and_stop_conversation (self, service_name, error);
+         }
+ }
+-- 
+2.52.0
+
