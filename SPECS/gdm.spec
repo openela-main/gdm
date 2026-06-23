@@ -11,7 +11,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.1
-Release: 42%{?dist}
+Release: 44%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -57,6 +57,7 @@ Patch100001: 0001-gdm-session-Force-reuse-vt-mode-for-legacy-Xorg-mode.patch
 Patch100002: 0002-local-display-factory-Fix-user-switching-with-legacy.patch
 Patch100003: 0003-local-display-factory-Ensure-displays-are-properly-h.patch
 Patch100004: 0004-local-display-factory-Return-a-session-type-on-legac.patch
+Patch100005: 0005-local-display-factory-Consider-tty-when-ensuring-dis.patch
 
 Patch110001: 0001-display-Add-new-FAILING-state.patch
 Patch110002: 0002-manager-Quit-plymouth-at-first-sign-of-failure.patch
@@ -71,6 +72,8 @@ Patch140001: 0001-session-Fix-memory-leak-on-new-outside-connection.patch
 Patch150001: 0001-libgdm-Don-t-collect-twice-sessions-on-usr-share.patch
 
 Patch160001: 0001-Revert-hack-that-quits-plymouth-late.patch
+Patch160002: 0001-manager-Update-RegisterSession-dbus-method.patch
+Patch160003: 0001-manager-Schedule-deferred-plymouth-quit-on-session-r.patch
 
 Patch170001: 0001-session-record-Rework-wtmp-utmp-btmp-fields.patch
 
@@ -377,6 +380,19 @@ dconf update || :
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
+* Mon Jun 1 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-44
+- Create display in "legacy-xorg" mode checking displays in tty
+  Resolves: https://redhat.atlassian.net/browse/RHEL-180820
+
+* Fri May 29 2026 Tomas Pelka <tpelka@redhat.com> - 40.1-43.1
+- retrigger new build in correct target
+  Resolves: https://redhat.atlassian.net/browse/RHEL-178706
+
+* Mon May 25 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-43
+- Update how GDM handles Registering session/display
+  to properly terminate plymouth
+  Resolves: https://redhat.atlassian.net/browse/RHEL-178706
+
 * Fri Mar 6 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-42
 - Terminate conflicting sesions started outside of GDM 
   Resolves: RHEL-4108

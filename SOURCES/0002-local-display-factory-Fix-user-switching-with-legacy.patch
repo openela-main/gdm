@@ -1,7 +1,7 @@
 From 510566699c480226b189215c6222f7e72979baf8 Mon Sep 17 00:00:00 2001
 From: Ray Strode <rstrode@redhat.com>
 Date: Wed, 22 May 2024 14:05:20 -0400
-Subject: [PATCH 2/4] local-display-factory: Fix user switching with legacy
+Subject: [PATCH 2/5] local-display-factory: Fix user switching with legacy
  xorg
 
 legacy-xorg sessions currently fail to completely user switch.

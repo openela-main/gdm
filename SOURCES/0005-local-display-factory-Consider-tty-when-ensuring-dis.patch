@@ -1,0 +1,81 @@
+From ce2a019ad18e4e11eb45218fa5a86055fa8a1533 Mon Sep 17 00:00:00 2001
+From: rpm-build <rpm-build>
+Date: Mon, 1 Jun 2026 20:04:50 +0200
+Subject: [PATCH 5/5] local-display-factory: Consider tty when ensuring display on seat
+
+In "leagcy-xorg" mode there can be cases where ensure_display() is called
+because some new device was inserted or seat properties changed... in
+those cases we were creating a new display when active_vt != GDM_INITIAL_VT while
+there was already a display on that vt.
+
+To fix that, check if there's already a display in the active_vt.
+---
+ daemon/gdm-local-display-factory.c | 35 +++++++++++++++---------------
+ 1 file changed, 17 insertions(+), 18 deletions(-)
+
+diff --git a/daemon/gdm-local-display-factory.c b/daemon/gdm-local-display-factory.c
+index 3a35018..393437c 100644
+--- a/daemon/gdm-local-display-factory.c
++++ b/daemon/gdm-local-display-factory.c
+@@ -110,6 +110,10 @@ static gboolean lookup_by_session_id (const char *id,
+                                       GdmDisplay *display,
+                                       gpointer    user_data);
+ 
++static gboolean lookup_by_tty (const char *id,
++                               GdmDisplay *display,
++                               gpointer    user_data);
++
+ G_DEFINE_TYPE (GdmLocalDisplayFactory, gdm_local_display_factory, GDM_TYPE_DISPLAY_FACTORY)
+ 
+ GQuark
+@@ -674,18 +678,14 @@ lookup_prepared_display_by_seat_id (const char *id,
+ }
+ 
+ static gboolean
+-lookup_managed_display_by_seat_id (const char *id,
+-                                   GdmDisplay *display,
+-                                   gpointer    user_data)
++lookup_managed_display_by_tty (const char *id,
++                               GdmDisplay *display,
++                               gpointer    user_data)
+ {
+-        int status;
+-
+-        status = gdm_display_get_status (display);
+-
+-        if (status != GDM_DISPLAY_MANAGED)
++        if (gdm_display_get_status (display) != GDM_DISPLAY_MANAGED)
+                 return FALSE;
+ 
+-        return lookup_by_seat_id (id, display, user_data);
++        return lookup_by_tty (id, display, user_data);
+ }
+ 
+ #ifdef HAVE_UDEV
+@@ -919,15 +919,14 @@ ensure_display_for_seat (GdmLocalDisplayFactory *factory,
+ 
+         if (is_seat0) {
+                 if (g_strcmp0 (preferred_display_server, "legacy-xorg") == 0) {
+-                        GdmDisplay *initial_display = NULL;
+-
+-                        display = gdm_display_store_find (store, lookup_managed_display_by_seat_id, (gpointer) seat_id);
+-                        initial_display = gdm_display_store_find (store, lookup_initial_display, (gpointer) NULL);
+-
+-                        if (initial_display == NULL || factory->active_vt != GDM_INITIAL_VT)
+-                                display = NULL;
+-
+-                        is_initial = initial_display == NULL;
++                        display = gdm_display_store_find (store, lookup_initial_display, (gpointer) NULL);
++                        if (display == NULL) {
++                                is_initial = TRUE;
++                        } else if (factory->active_vt != 0 && factory->active_vt != GDM_INITIAL_VT) {
++                                g_autofree char *tty = g_strdup_printf ("tty%u", factory->active_vt);
++                                display = gdm_display_store_find (store, lookup_managed_display_by_tty, (gpointer) tty);
++                                is_initial = FALSE;
++                        }
+                 } else {
+                         display = gdm_display_store_find (store, lookup_prepared_display_by_seat_id, (gpointer) seat_id);
+                         is_initial = TRUE;
+-- 
+2.54.0
+

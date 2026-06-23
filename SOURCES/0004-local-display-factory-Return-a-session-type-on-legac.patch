@@ -1,7 +1,7 @@
 From 8bcb9f43c203ab4818381cd707128eac74ab958d Mon Sep 17 00:00:00 2001
 From: Joan Torres <joantolo@redhat.com>
 Date: Fri, 13 Jun 2025 12:56:41 +0200
-Subject: [PATCH 4/4] local-display-factory: Return a session type on
+Subject: [PATCH 4/5] local-display-factory: Return a session type on
  legacy-xorg
 
 On legacy-xorg, there's graphic support through Xorg.

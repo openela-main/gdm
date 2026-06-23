@@ -1,7 +1,7 @@
 From de73b654cd1b726b905a9bf3238c7eaabfe465d5 Mon Sep 17 00:00:00 2001
 From: Joan Torres <joantolo@redhat.com>
 Date: Fri, 13 Jun 2025 13:05:07 +0200
-Subject: [PATCH 3/4] local-display-factory: Ensure displays are properly
+Subject: [PATCH 3/5] local-display-factory: Ensure displays are properly
  handled on status change
 
 1. There are some cases where a display will change its status from any
