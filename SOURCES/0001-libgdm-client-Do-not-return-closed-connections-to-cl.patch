@@ -1,0 +1,723 @@
+From f98fbff07d03053f69b7ed4ed95b3ca5d052fd6e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marco=20Trevisan=20=28Trevi=C3=B1o=29?= <mail@3v1n0.net>
+Date: Wed, 17 Sep 2025 17:59:46 +0200
+Subject: [PATCH 1/6] libgdm/client: Do not return closed connections to clients
+
+We have a function called gdm_client_get_open_connection, but it
+actually may return closed connections.
+So ensure this is not the case.
+
+This is a necessary and fast fix, but.. for the future, handling the proxies
+needs to be done in a more responsible way:
+  * NULL them when the connection is closed
+  * Add hard ownership on them
+---
+ libgdm/gdm-client.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/libgdm/gdm-client.c b/libgdm/gdm-client.c
+index a74a70b34..71428d3bd 100644
+--- a/libgdm/gdm-client.c
++++ b/libgdm/gdm-client.c
+@@ -98,7 +98,15 @@ gdm_client_get_open_connection (GdmClient *client)
+         }
+ 
+         if (proxy != NULL) {
+-                return g_dbus_proxy_get_connection (proxy);
++                GDBusConnection *connection = g_dbus_proxy_get_connection (proxy);
++
++                if G_UNLIKELY (g_dbus_connection_is_closed (connection)) {
++                        g_critical ("%s: connection is closed",
++                                    g_type_name_from_instance ((GTypeInstance *) proxy));
++                        return NULL;
++                }
++
++                return connection;
+         }
+ 
+         return NULL;
+-- 
+2.54.0
+
+From 7fd3ba0431a414ec97cd2d219d73a87336f94798 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Wed, 17 Dec 2025 18:09:31 +0100
+Subject: [PATCH 2/6] libgdm: Refactor get_user_verifier_sync
+
+Use early returns to reduce nesting and improve readability.
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/345>
+---
+ libgdm/gdm-client.c | 84 +++++++++++++++++++++++----------------------
+ 1 file changed, 43 insertions(+), 41 deletions(-)
+
+diff --git a/libgdm/gdm-client.c b/libgdm/gdm-client.c
+index fb58f1a..dbc187c 100644
+--- a/libgdm/gdm-client.c
++++ b/libgdm/gdm-client.c
+@@ -660,16 +660,17 @@ gdm_client_get_user_verifier_sync (GdmClient     *client,
+ {
+         g_autoptr(GDBusConnection) connection = NULL;
+         GdmUserVerifier *user_verifier;
++        GHashTable *user_verifier_extensions;
++        gboolean res;
++        size_t i;
+ 
+-        if (client->user_verifier != NULL) {
++        if (client->user_verifier != NULL)
+                 return g_object_ref (client->user_verifier);
+-        }
+ 
+         connection = gdm_client_get_connection_sync (client, cancellable, error);
+ 
+-        if (connection == NULL) {
++        if (connection == NULL)
+                 return NULL;
+-        }
+ 
+         user_verifier = gdm_user_verifier_proxy_new_sync (connection,
+                                                           G_DBUS_PROXY_FLAGS_NONE,
+@@ -680,43 +681,44 @@ gdm_client_get_user_verifier_sync (GdmClient     *client,
+ 
+         g_set_weak_pointer (&client->user_verifier, user_verifier);
+ 
+-        if (client->user_verifier != NULL) {
+-                if (client->enabled_extensions != NULL) {
+-                        GHashTable *user_verifier_extensions;
+-                        gboolean res;
+-
+-                        user_verifier_extensions = g_hash_table_new_full (g_str_hash,
+-                                                                          g_str_equal,
+-                                                                          NULL,
+-                                                                          (GDestroyNotify)
+-                                                                          free_interface_skeleton);
+-                        g_object_set_data_full (G_OBJECT (client->user_verifier),
+-                                                "gdm-client-user-verifier-extensions",
+-                                                user_verifier_extensions,
+-                                                (GDestroyNotify) g_hash_table_unref);
+-
+-                        res = gdm_user_verifier_call_enable_extensions_sync (client->user_verifier,
+-                                                                            (const char * const *)
+-                                                                             client->enabled_extensions,
+-                                                                             cancellable,
+-                                                                             NULL);
+-
+-                        if (res) {
+-                                size_t i;
+-                                for (i = 0; client->enabled_extensions[i] != NULL; i++) {
+-                                            if (strcmp (client->enabled_extensions[i],
+-                                                        gdm_user_verifier_choice_list_interface_info ()->name) == 0) {
+-                                                        GdmUserVerifierChoiceList *choice_list_interface;
+-                                                        choice_list_interface = gdm_user_verifier_choice_list_proxy_new_sync (connection,
+-                                                                                                                              G_DBUS_PROXY_FLAGS_NONE,
+-                                                                                                                              NULL,
+-                                                                                                                              SESSION_DBUS_PATH,
+-                                                                                                                              cancellable,
+-                                                                                                                              NULL);
+-                                                        if (choice_list_interface != NULL)
+-                                                                    g_hash_table_insert (user_verifier_extensions, client->enabled_extensions[i], choice_list_interface);
+-                                            }
+-                                }
++        if (user_verifier == NULL)
++                return NULL;
++
++        if (client->enabled_extensions == NULL)
++                return client->user_verifier;
++
++        user_verifier_extensions = g_hash_table_new_full (g_str_hash,
++                                                          g_str_equal,
++                                                          NULL,
++                                                          (GDestroyNotify)
++                                                          free_interface_skeleton);
++        g_object_set_data_full (G_OBJECT (client->user_verifier),
++                                "gdm-client-user-verifier-extensions",
++                                user_verifier_extensions,
++                                (GDestroyNotify) g_hash_table_unref);
++
++        res = gdm_user_verifier_call_enable_extensions_sync (client->user_verifier,
++                                                             (const char * const *)
++                                                             client->enabled_extensions,
++                                                             cancellable,
++                                                             NULL);
++        if (!res)
++                return client->user_verifier;
++
++        for (i = 0; client->enabled_extensions[i] != NULL; i++) {
++                if (strcmp (client->enabled_extensions[i],
++                            gdm_user_verifier_choice_list_interface_info ()->name) == 0) {
++                        GdmUserVerifierChoiceList *choice_list_interface;
++                        choice_list_interface = gdm_user_verifier_choice_list_proxy_new_sync (connection,
++                                                                                              G_DBUS_PROXY_FLAGS_NONE,
++                                                                                              NULL,
++                                                                                              SESSION_DBUS_PATH,
++                                                                                              cancellable,
++                                                                                              NULL);
++                        if (choice_list_interface != NULL) {
++                                g_hash_table_insert (user_verifier_extensions,
++                                                     client->enabled_extensions[i],
++                                                     choice_list_interface);
+                         }
+                 }
+         }
+-- 
+2.54.0
+
+
+From 6c47ae04f24922ac5513c96f269ac11de90ff0e3 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Wed, 17 Sep 2025 16:54:20 +0200
+Subject: [PATCH 3/6] libgdm: Make client own the proxies
+
+Now, each caller of libgdm will only have to deal with the reference of
+the proxies but that won't make gdm client proxies be destroyed.
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/345>
+---
+ libgdm/gdm-client.c | 59 +++++++++++++++++++++++++--------------------
+ 1 file changed, 33 insertions(+), 26 deletions(-)
+
+diff --git a/libgdm/gdm-client.c b/libgdm/gdm-client.c
+index dbc187c..3a007a4 100644
+--- a/libgdm/gdm-client.c
++++ b/libgdm/gdm-client.c
+@@ -525,7 +525,7 @@ gdm_client_open_reauthentication_channel_sync (GdmClient     *client,
+         g_autoptr(GDBusConnection) connection = NULL;
+         g_autoptr(GdmManager)      manager = NULL;
+         g_autofree char *address = NULL;
+-        GdmUserVerifier *user_verifier = NULL;
++        g_autoptr(GdmUserVerifier) user_verifier = NULL;
+         gboolean         ret;
+ 
+         g_return_val_if_fail (GDM_IS_CLIENT (client), NULL);
+@@ -570,9 +570,12 @@ gdm_client_open_reauthentication_channel_sync (GdmClient     *client,
+                                                           cancellable,
+                                                           error);
+ 
+-        g_set_weak_pointer (&client->user_verifier_for_reauth, user_verifier);
++        g_set_object (&client->user_verifier_for_reauth, user_verifier);
++
++        if (user_verifier == NULL)
++                return NULL;
+ 
+-        return user_verifier;
++        return g_object_ref (client->user_verifier_for_reauth);
+ }
+ 
+ /**
+@@ -631,15 +634,18 @@ gdm_client_open_reauthentication_channel_finish (GdmClient       *client,
+                                                  GAsyncResult    *result,
+                                                  GError         **error)
+ {
+-        GdmUserVerifier *user_verifier;
++        g_autoptr(GdmUserVerifier) user_verifier = NULL;
+ 
+         g_return_val_if_fail (GDM_IS_CLIENT (client), NULL);
+ 
+         user_verifier = g_task_propagate_pointer (G_TASK (result), error);
+ 
+-        g_set_weak_pointer (&client->user_verifier_for_reauth, user_verifier);
++        g_set_object (&client->user_verifier_for_reauth, user_verifier);
+ 
+-        return user_verifier;
++        if (user_verifier == NULL)
++                return NULL;
++
++        return g_object_ref (client->user_verifier_for_reauth);
+ }
+ 
+ /**
+@@ -659,7 +665,7 @@ gdm_client_get_user_verifier_sync (GdmClient     *client,
+                                    GError       **error)
+ {
+         g_autoptr(GDBusConnection) connection = NULL;
+-        GdmUserVerifier *user_verifier;
++        g_autoptr(GdmUserVerifier) user_verifier = NULL;
+         GHashTable *user_verifier_extensions;
+         gboolean res;
+         size_t i;
+@@ -679,13 +685,13 @@ gdm_client_get_user_verifier_sync (GdmClient     *client,
+                                                           cancellable,
+                                                           error);
+ 
+-        g_set_weak_pointer (&client->user_verifier, user_verifier);
++        g_set_object (&client->user_verifier, user_verifier);
+ 
+         if (user_verifier == NULL)
+                 return NULL;
+ 
+         if (client->enabled_extensions == NULL)
+-                return client->user_verifier;
++                return g_object_ref (client->user_verifier);
+ 
+         user_verifier_extensions = g_hash_table_new_full (g_str_hash,
+                                                           g_str_equal,
+@@ -703,7 +709,7 @@ gdm_client_get_user_verifier_sync (GdmClient     *client,
+                                                              cancellable,
+                                                              NULL);
+         if (!res)
+-                return client->user_verifier;
++                return g_object_ref (client->user_verifier);
+ 
+         for (i = 0; client->enabled_extensions[i] != NULL; i++) {
+                 if (strcmp (client->enabled_extensions[i],
+@@ -723,7 +729,7 @@ gdm_client_get_user_verifier_sync (GdmClient     *client,
+                 }
+         }
+ 
+-        return client->user_verifier;
++        return g_object_ref (client->user_verifier);
+ }
+ 
+ static void
+@@ -807,7 +813,7 @@ gdm_client_get_user_verifier_finish (GdmClient       *client,
+                                      GAsyncResult    *result,
+                                      GError         **error)
+ {
+-        GdmUserVerifier *user_verifier;
++        g_autoptr(GdmUserVerifier) user_verifier = NULL;
+ 
+         g_return_val_if_fail (GDM_IS_CLIENT (client), NULL);
+ 
+@@ -818,9 +824,9 @@ gdm_client_get_user_verifier_finish (GdmClient       *client,
+         if (user_verifier == NULL)
+                 return NULL;
+ 
+-        g_set_weak_pointer (&client->user_verifier, user_verifier);
++        g_set_object (&client->user_verifier, user_verifier);
+ 
+-        return user_verifier;
++        return g_object_ref (client->user_verifier);
+ }
+ 
+ /**
+@@ -975,7 +981,7 @@ gdm_client_get_greeter_finish (GdmClient       *client,
+                                GAsyncResult    *result,
+                                GError         **error)
+ {
+-        GdmGreeter *greeter;
++        g_autoptr(GdmGreeter) greeter = NULL;
+ 
+         g_return_val_if_fail (GDM_IS_CLIENT (client), NULL);
+ 
+@@ -986,9 +992,9 @@ gdm_client_get_greeter_finish (GdmClient       *client,
+         if (greeter == NULL)
+                 return NULL;
+ 
+-        g_set_weak_pointer (&client->greeter, greeter);
++        g_set_object (&client->greeter, greeter);
+ 
+-        return greeter;
++        return g_object_ref (client->greeter);
+ }
+ 
+ /**
+@@ -1010,7 +1016,7 @@ gdm_client_get_greeter_sync (GdmClient     *client,
+                              GError       **error)
+ {
+         g_autoptr(GDBusConnection) connection = NULL;
+-        GdmGreeter *greeter;
++        g_autoptr(GdmGreeter) greeter = NULL;
+ 
+         if (client->greeter != NULL) {
+                 return g_object_ref (client->greeter);
+@@ -1029,13 +1035,14 @@ gdm_client_get_greeter_sync (GdmClient     *client,
+                                               cancellable,
+                                               error);
+ 
+-        g_set_weak_pointer (&client->greeter, greeter);
++        g_set_object (&client->greeter, greeter);
+ 
+-        if (client->greeter != NULL) {
+-                query_for_timed_login_requested_signal (client->greeter);
+-        }
++        if (greeter == NULL)
++                return NULL;
++
++        query_for_timed_login_requested_signal (greeter);
+ 
+-        return client->greeter;
++        return g_object_ref (client->greeter);
+ }
+ 
+ static void
+@@ -1384,9 +1391,9 @@ gdm_client_finalize (GObject *object)
+ 
+         g_return_if_fail (client != NULL);
+ 
+-        g_clear_weak_pointer (&client->user_verifier);
+-        g_clear_weak_pointer (&client->user_verifier_for_reauth);
+-        g_clear_weak_pointer (&client->greeter);
++        g_clear_object (&client->user_verifier);
++        g_clear_object (&client->user_verifier_for_reauth);
++        g_clear_object (&client->greeter);
+         g_clear_weak_pointer (&client->remote_greeter);
+         g_clear_weak_pointer (&client->chooser);
+ 
+-- 
+2.54.0
+
+
+From 515e1c588fc18dabbc8508d9339e47fb9f115816 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Fri, 19 Dec 2025 11:57:08 +0100
+Subject: [PATCH 4/6] libgdm: Track proxies connections and unset them on
+ disconnect
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+If one of the gdm_client_get_* functions to get dbus proxies is used
+after the proxy connection is closed, we were still returning it, but
+in an invalid state.
+
+This can happen when gdm fails to start the session application for
+whatever reason, in fact in such case gnome-shell is not restarted and
+so it preserves the same gdm client instance, but meanwhile the proxies
+connections have been closed.
+
+Now, in such state, the gdm library would still return the old cached
+invalid proxies, since we do not really check for the connection
+validity.
+
+To prevent this to happen, track the connection state of the cached
+proxies and nullify the proxies instances on disconnection.
+
+Co-authored-by: Marco Trevisan (Treviño) <mail@3v1n0.net>
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/345>
+---
+ libgdm/gdm-client.c | 78 +++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 69 insertions(+), 9 deletions(-)
+
+diff --git a/libgdm/gdm-client.c b/libgdm/gdm-client.c
+index 3a007a4..d07261a 100644
+--- a/libgdm/gdm-client.c
++++ b/libgdm/gdm-client.c
+@@ -51,6 +51,7 @@ struct _GdmClient
+         char              **enabled_extensions;
+ };
+ 
++static void     gdm_client_dispose     (GObject        *object);
+ static void     gdm_client_finalize    (GObject        *object);
+ 
+ G_DEFINE_TYPE (GdmClient, gdm_client, G_TYPE_OBJECT);
+@@ -502,6 +503,55 @@ gdm_client_get_connection (GdmClient           *client,
+         }
+ }
+ 
++static void
++_untrack_proxy (GDBusProxy **proxy)
++{
++        GDBusConnection *connection;
++
++        if (*proxy == NULL)
++                return;
++
++        connection = g_dbus_proxy_get_connection (*proxy);
++        g_signal_handlers_disconnect_by_func (connection,
++                                              G_CALLBACK (_untrack_proxy),
++                                              proxy);
++
++        g_clear_object (proxy);
++}
++
++#define untrack_proxy(proxy) \
++  ( \
++    0 ? (void)(*(proxy)) : \
++    (_untrack_proxy) ((GDBusProxy **) (proxy)) \
++  )
++
++static void
++_track_proxy (GDBusProxy **proxy,
++              GDBusProxy  *new_proxy)
++{
++        GDBusConnection *connection;
++
++        untrack_proxy (proxy);
++
++        if (new_proxy == NULL)
++                return;
++
++        g_set_object (proxy, new_proxy);
++
++        connection = g_dbus_proxy_get_connection (*proxy);
++        g_signal_connect_swapped (connection,
++                                  "closed",
++                                  G_CALLBACK (_untrack_proxy),
++                                  proxy);
++}
++
++#define track_proxy(proxy, new_proxy) \
++  ( \
++    0 ? (void)(*(proxy) = (new_proxy)) : \
++    (_track_proxy) ((GDBusProxy **) (proxy), \
++                 G_DBUS_PROXY ((new_proxy))) \
++  )
++
+ /**
+  * gdm_client_open_reauthentication_channel_sync:
+  * @client: a #GdmClient
+@@ -570,7 +620,7 @@ gdm_client_open_reauthentication_channel_sync (GdmClient     *client,
+                                                           cancellable,
+                                                           error);
+ 
+-        g_set_object (&client->user_verifier_for_reauth, user_verifier);
++        track_proxy (&client->user_verifier_for_reauth, user_verifier);
+ 
+         if (user_verifier == NULL)
+                 return NULL;
+@@ -640,7 +690,7 @@ gdm_client_open_reauthentication_channel_finish (GdmClient       *client,
+ 
+         user_verifier = g_task_propagate_pointer (G_TASK (result), error);
+ 
+-        g_set_object (&client->user_verifier_for_reauth, user_verifier);
++        track_proxy (&client->user_verifier_for_reauth, user_verifier);
+ 
+         if (user_verifier == NULL)
+                 return NULL;
+@@ -685,7 +735,7 @@ gdm_client_get_user_verifier_sync (GdmClient     *client,
+                                                           cancellable,
+                                                           error);
+ 
+-        g_set_object (&client->user_verifier, user_verifier);
++        track_proxy (&client->user_verifier, user_verifier);
+ 
+         if (user_verifier == NULL)
+                 return NULL;
+@@ -824,7 +874,7 @@ gdm_client_get_user_verifier_finish (GdmClient       *client,
+         if (user_verifier == NULL)
+                 return NULL;
+ 
+-        g_set_object (&client->user_verifier, user_verifier);
++        track_proxy (&client->user_verifier, user_verifier);
+ 
+         return g_object_ref (client->user_verifier);
+ }
+@@ -992,7 +1042,7 @@ gdm_client_get_greeter_finish (GdmClient       *client,
+         if (greeter == NULL)
+                 return NULL;
+ 
+-        g_set_object (&client->greeter, greeter);
++        track_proxy (&client->greeter, greeter);
+ 
+         return g_object_ref (client->greeter);
+ }
+@@ -1035,7 +1085,7 @@ gdm_client_get_greeter_sync (GdmClient     *client,
+                                               cancellable,
+                                               error);
+ 
+-        g_set_object (&client->greeter, greeter);
++        track_proxy (&client->greeter, greeter);
+ 
+         if (greeter == NULL)
+                 return NULL;
+@@ -1371,6 +1421,7 @@ gdm_client_class_init (GdmClientClass *klass)
+ {
+         GObjectClass   *object_class = G_OBJECT_CLASS (klass);
+ 
++        object_class->dispose = gdm_client_dispose;
+         object_class->finalize = gdm_client_finalize;
+ }
+ 
+@@ -1379,6 +1430,18 @@ gdm_client_init (GdmClient *client)
+ {
+ }
+ 
++static void
++gdm_client_dispose (GObject *object)
++{
++        GdmClient *client = GDM_CLIENT (object);
++
++        untrack_proxy (&client->user_verifier);
++        untrack_proxy (&client->user_verifier_for_reauth);
++        untrack_proxy (&client->greeter);
++
++        G_OBJECT_CLASS (gdm_client_parent_class)->dispose (object);
++}
++
+ static void
+ gdm_client_finalize (GObject *object)
+ {
+@@ -1391,9 +1454,6 @@ gdm_client_finalize (GObject *object)
+ 
+         g_return_if_fail (client != NULL);
+ 
+-        g_clear_object (&client->user_verifier);
+-        g_clear_object (&client->user_verifier_for_reauth);
+-        g_clear_object (&client->greeter);
+         g_clear_weak_pointer (&client->remote_greeter);
+         g_clear_weak_pointer (&client->chooser);
+ 
+-- 
+2.54.0
+
+
+From 72cb09b3f06b9c3c0f9c0fa0d53701c7ecaa3ca3 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Tue, 3 Feb 2026 19:56:44 +0100
+Subject: [PATCH 5/6] libgdm: Use g_str_equal instead of strcmp for consistency
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/345>
+---
+ libgdm/gdm-client.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/libgdm/gdm-client.c b/libgdm/gdm-client.c
+index d07261a..9471505 100644
+--- a/libgdm/gdm-client.c
++++ b/libgdm/gdm-client.c
+@@ -246,8 +246,8 @@ on_user_verifier_extensions_enabled (GdmUserVerifier    *user_verifier,
+                 g_debug ("Enabled extensions[%lu] = %s", i, client->enabled_extensions[i]);
+                 g_hash_table_insert (user_verifier_extensions, client->enabled_extensions[i], NULL);
+ 
+-                if (strcmp (client->enabled_extensions[i],
+-                            gdm_user_verifier_choice_list_interface_info ()->name) == 0) {
++                if (g_str_equal (client->enabled_extensions[i],
++                                 gdm_user_verifier_choice_list_interface_info ()->name)) {
+                         g_hash_table_insert (user_verifier_extensions, client->enabled_extensions[i], NULL);
+                         gdm_user_verifier_choice_list_proxy_new (connection,
+                                                                  G_DBUS_PROXY_FLAGS_NONE,
+@@ -762,8 +762,8 @@ gdm_client_get_user_verifier_sync (GdmClient     *client,
+                 return g_object_ref (client->user_verifier);
+ 
+         for (i = 0; client->enabled_extensions[i] != NULL; i++) {
+-                if (strcmp (client->enabled_extensions[i],
+-                            gdm_user_verifier_choice_list_interface_info ()->name) == 0) {
++                if (g_str_equal (client->enabled_extensions[i],
++                                 gdm_user_verifier_choice_list_interface_info ()->name)) {
+                         GdmUserVerifierChoiceList *choice_list_interface;
+                         choice_list_interface = gdm_user_verifier_choice_list_proxy_new_sync (connection,
+                                                                                               G_DBUS_PROXY_FLAGS_NONE,
+-- 
+2.54.0
+
+
+From 2a7e2d8dec69bcba81567b1345e8c135c208b3d8 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Wed, 17 Jun 2026 11:18:02 +0200
+Subject: [PATCH 6/6] libgdm: Apply proxy ownership and tracking to
+ remote_greeter and chooser
+
+Extend the same treatment applied to user_verifier and greeter:
+- Make client own the proxies (g_set_object / g_autoptr)
+- Track proxy connections and unset them on disconnect (track_proxy)
+- Move cleanup to dispose
+---
+ libgdm/gdm-client.c | 35 ++++++++++++++++++++---------------
+ 1 file changed, 20 insertions(+), 15 deletions(-)
+
+diff --git a/libgdm/gdm-client.c b/libgdm/gdm-client.c
+index 9471505..d1e4c6a 100644
+--- a/libgdm/gdm-client.c
++++ b/libgdm/gdm-client.c
+@@ -1197,7 +1197,7 @@ gdm_client_get_remote_greeter_finish (GdmClient     *client,
+                                       GAsyncResult  *result,
+                                       GError       **error)
+ {
+-        GdmRemoteGreeter *remote_greeter;
++        g_autoptr(GdmRemoteGreeter) remote_greeter = NULL;
+ 
+         g_return_val_if_fail (GDM_IS_CLIENT (client), NULL);
+ 
+@@ -1208,9 +1208,9 @@ gdm_client_get_remote_greeter_finish (GdmClient     *client,
+         if (remote_greeter == NULL)
+                 return NULL;
+ 
+-        g_set_weak_pointer (&client->remote_greeter, remote_greeter);
++        track_proxy (&client->remote_greeter, remote_greeter);
+ 
+-        return remote_greeter;
++        return g_object_ref (client->remote_greeter);
+ }
+ 
+ /**
+@@ -1231,7 +1231,7 @@ gdm_client_get_remote_greeter_sync (GdmClient     *client,
+                                     GError       **error)
+ {
+         g_autoptr(GDBusConnection) connection = NULL;
+-        GdmRemoteGreeter *remote_greeter;
++        g_autoptr(GdmRemoteGreeter) remote_greeter = NULL;
+ 
+         if (client->remote_greeter != NULL) {
+                 return g_object_ref (client->remote_greeter);
+@@ -1250,9 +1250,12 @@ gdm_client_get_remote_greeter_sync (GdmClient     *client,
+                                                             cancellable,
+                                                             error);
+ 
+-        g_set_weak_pointer (&client->remote_greeter, remote_greeter);
++        track_proxy (&client->remote_greeter, remote_greeter);
++
++        if (remote_greeter == NULL)
++                return NULL;
+ 
+-        return client->remote_greeter;
++        return g_object_ref (client->remote_greeter);
+ }
+ 
+ static void
+@@ -1358,7 +1361,7 @@ gdm_client_get_chooser_finish (GdmClient       *client,
+                                GAsyncResult    *result,
+                                GError         **error)
+ {
+-        GdmChooser *chooser;
++        g_autoptr(GdmChooser) chooser = NULL;
+ 
+         g_return_val_if_fail (GDM_IS_CLIENT (client), NULL);
+ 
+@@ -1369,9 +1372,9 @@ gdm_client_get_chooser_finish (GdmClient       *client,
+         if (chooser == NULL)
+                 return NULL;
+ 
+-        g_set_weak_pointer (&client->chooser, chooser);
++        track_proxy (&client->chooser, chooser);
+ 
+-        return chooser;
++        return g_object_ref (client->chooser);
+ }
+ 
+ /**
+@@ -1392,7 +1395,7 @@ gdm_client_get_chooser_sync (GdmClient     *client,
+                              GError       **error)
+ {
+         g_autoptr(GDBusConnection) connection = NULL;
+-        GdmChooser *chooser;
++        g_autoptr(GdmChooser) chooser = NULL;
+ 
+         if (client->chooser != NULL) {
+                 return g_object_ref (client->chooser);
+@@ -1411,9 +1414,12 @@ gdm_client_get_chooser_sync (GdmClient     *client,
+                                               cancellable,
+                                               error);
+ 
+-        g_set_weak_pointer (&client->chooser, chooser);
++        track_proxy (&client->chooser, chooser);
+ 
+-        return client->chooser;
++        if (chooser == NULL)
++                return NULL;
++
++        return g_object_ref (client->chooser);
+ }
+ 
+ static void
+@@ -1438,6 +1444,8 @@ gdm_client_dispose (GObject *object)
+         untrack_proxy (&client->user_verifier);
+         untrack_proxy (&client->user_verifier_for_reauth);
+         untrack_proxy (&client->greeter);
++        untrack_proxy (&client->remote_greeter);
++        untrack_proxy (&client->chooser);
+ 
+         G_OBJECT_CLASS (gdm_client_parent_class)->dispose (object);
+ }
+@@ -1454,9 +1462,6 @@ gdm_client_finalize (GObject *object)
+ 
+         g_return_if_fail (client != NULL);
+ 
+-        g_clear_weak_pointer (&client->remote_greeter);
+-        g_clear_weak_pointer (&client->chooser);
+-
+         g_strfreev (client->enabled_extensions);
+ 
+         G_OBJECT_CLASS (gdm_client_parent_class)->finalize (object);
+-- 
+2.54.0
+

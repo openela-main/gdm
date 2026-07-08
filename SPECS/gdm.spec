@@ -12,7 +12,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.0
-Release: 27%{?dist}
+Release: 28%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -63,6 +63,9 @@ Patch130001: 0001-daemon-Don-t-error-on-shutdown.patch
 # Fix LUKS password propagation
 Patch140001: 0001-build-Support-keyutils-1.5.11-and-older.patch
 Patch140002: 0002-pam_gdm-Use-the-last-cryptsetup-password-instead-of-.patch
+
+# Fix recover client proxies
+Patch 150001: 0001-libgdm-client-Do-not-return-closed-connections-to-cl.patch
 
 # Non-upstreamable workarounds
 Patch66620001: 0001-data-reap-gdm-sessions-on-shutdown.patch
@@ -386,6 +389,10 @@ fi
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
+* Wed Jun 17 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.0-28
+- Fix recovering client proxies
+  Resolves: RHEL-185770
+
 * Mon Dec 12 2022 Ray Strode <rstrode@redhat.com> - 40.0-27
 - Fix LUKs password handling
   Resolves: #2150649
