@@ -1,0 +1,124 @@
+From 2892ac533be818826b4a1ab3c10a9619632e3a81 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Thu, 9 Jul 2026 20:09:10 +0200
+Subject: [PATCH] data: Add PAM substack wrappers to prevent auth bypass on
+ empty service files
+
+When an authselect-managed service file (e.g., switchable-auth) is missing
+or empty, a direct substack to it returns PAM_SUCCESS without checking any
+credentials, allowing unauthenticated session access.
+
+Introduce generated wrapper PAM services (gdm-*-substack) that use include
+instead of substack internally, followed by pam_deny.so as a safety net.
+The gdm-* services now substack these wrappers: on a properly configured
+system, sufficient modules trigger done before reaching pam_deny.so; on an
+empty or missing service file, pam_deny.so catches the fallthrough.
+---
+ data/meson.build                              | 20 +++++++++++++++++++
+ data/pam-redhat/gdm-fingerprint.pam           |  2 +-
+ data/pam-redhat/gdm-password.pam              |  4 ++--
+ .../gdm-service-auth-substack.pam.in          |  5 +++++
+ data/pam-redhat/gdm-smartcard.pam             |  2 +-
+ data/pam-redhat/gdm-switchable-auth.pam       |  4 ++--
+ 6 files changed, 31 insertions(+), 6 deletions(-)
+ create mode 100644 data/pam-redhat/gdm-service-auth-substack.pam.in
+
+diff --git a/data/meson.build b/data/meson.build
+index 2c5cf94..795f226 100644
+--- a/data/meson.build
++++ b/data/meson.build
+@@ -134,6 +134,26 @@ pam_data_files_map = {
+   ],
+ }
+ 
++if default_pam_config == 'redhat'
++  pam_substack_services = [
++    'password-auth',
++    'smartcard-auth',
++    'fingerprint-auth',
++    'switchable-auth',
++  ]
++  foreach service : pam_substack_services
++    pam_conf = configuration_data()
++    pam_conf.set('PAM_SERVICE', service)
++    configure_file(
++      input: 'pam-redhat/gdm-service-auth-substack.pam.in',
++      output: 'gdm-@0@-substack'.format(service),
++      configuration: pam_conf,
++      install: true,
++      install_dir: pam_profiles_dir,
++    )
++  endforeach
++endif
++
+ pam_data_files = pam_data_files_map.get(default_pam_config, [])
+ foreach _pam_filename : pam_data_files
+   install_data('pam-@0@/@1@.pam'.format(default_pam_config, _pam_filename),
+diff --git a/data/pam-redhat/gdm-fingerprint.pam b/data/pam-redhat/gdm-fingerprint.pam
+index 628568e..b2eddec 100644
+--- a/data/pam-redhat/gdm-fingerprint.pam
++++ b/data/pam-redhat/gdm-fingerprint.pam
+@@ -1,4 +1,4 @@
+-auth        substack      fingerprint-auth
++auth        substack      gdm-fingerprint-auth-substack
+ auth        include       postlogin
+ 
+ account     required      pam_nologin.so
+diff --git a/data/pam-redhat/gdm-password.pam b/data/pam-redhat/gdm-password.pam
+index c75da00..4e331b2 100644
+--- a/data/pam-redhat/gdm-password.pam
++++ b/data/pam-redhat/gdm-password.pam
+@@ -1,12 +1,12 @@
+ auth     [success=done ignore=ignore default=bad] pam_selinux_permit.so
+-auth        substack      password-auth
++auth        substack      gdm-password-auth-substack
+ auth        optional      pam_gnome_keyring.so
+ auth        include       postlogin
+ 
+ account     required      pam_nologin.so
+ account     include       password-auth
+ 
+-password    substack       password-auth
++password    substack       gdm-password-auth-substack
+ -password   optional       pam_gnome_keyring.so use_authtok
+ 
+ session     required      pam_selinux.so close
+diff --git a/data/pam-redhat/gdm-service-auth-substack.pam.in b/data/pam-redhat/gdm-service-auth-substack.pam.in
+new file mode 100644
+index 0000000..db43cbb
+--- /dev/null
++++ b/data/pam-redhat/gdm-service-auth-substack.pam.in
+@@ -0,0 +1,5 @@
++auth     include   @PAM_SERVICE@
++auth     required  pam_deny.so
++
++password include   @PAM_SERVICE@
++password required  pam_deny.so
+diff --git a/data/pam-redhat/gdm-smartcard.pam b/data/pam-redhat/gdm-smartcard.pam
+index 3264a71..da1c328 100644
+--- a/data/pam-redhat/gdm-smartcard.pam
++++ b/data/pam-redhat/gdm-smartcard.pam
+@@ -1,4 +1,4 @@
+-auth        substack      smartcard-auth
++auth        substack      gdm-smartcard-auth-substack
+ auth        include       postlogin
+ 
+ account     required      pam_nologin.so
+diff --git a/data/pam-redhat/gdm-switchable-auth.pam b/data/pam-redhat/gdm-switchable-auth.pam
+index 6648c3c..9b7e6de 100644
+--- a/data/pam-redhat/gdm-switchable-auth.pam
++++ b/data/pam-redhat/gdm-switchable-auth.pam
+@@ -1,11 +1,11 @@
+-auth        substack      switchable-auth
++auth        substack      gdm-switchable-auth-substack
+ auth        optional      pam_gnome_keyring.so
+ auth        include       postlogin
+ 
+ account     required      pam_nologin.so
+ account     include       switchable-auth
+ 
+-password    substack       switchable-auth
++password    substack       gdm-switchable-auth-substack
+ -password   optional       pam_gnome_keyring.so use_authtok
+ 
+ session     required      pam_selinux.so close
