@@ -1,0 +1,31 @@
+From 5a0c2afd7e2001a848101a8154d38fcf1b092963 Mon Sep 17 00:00:00 2001
+From: Ignacio Casal Quinteiro <qignacio@amazon.com>
+Date: Fri, 14 Aug 2026 11:43:09 +0200
+Subject: [PATCH] gdm-session-settings: keep a ref to the user
+
+The user needs to keep a reference so it stays alive during
+the signal emissions in case the manager decides to remove
+the user internally.
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/392>
+---
+ daemon/gdm-session-settings.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/daemon/gdm-session-settings.c b/daemon/gdm-session-settings.c
+index 33100a70c..07bb8e26f 100644
+--- a/daemon/gdm-session-settings.c
++++ b/daemon/gdm-session-settings.c
+@@ -349,7 +349,8 @@ gdm_session_settings_load (GdmSessionSettings  *settings,
+         }
+ 
+         settings->user = act_user_manager_get_user (settings->user_manager,
+-                                                          username);
++                                                    username);
++        g_object_ref (settings->user);
+ 
+         if (!act_user_is_loaded (settings->user)) {
+                 g_signal_connect (settings->user,
+-- 
+2.55.0
+
