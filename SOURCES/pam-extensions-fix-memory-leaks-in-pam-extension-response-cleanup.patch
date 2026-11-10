@@ -1,0 +1,1249 @@
+From 4af486226a4ed5871814594a4202a8078d9794ed Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Mon, 27 Apr 2026 19:36:56 +0200
+Subject: [PATCH 1/7] session-worker: Remove unused json_reply
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/363>
+---
+ daemon/gdm-session-worker.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/daemon/gdm-session-worker.c b/daemon/gdm-session-worker.c
+index 46ff94e28..154cc7b7c 100644
+--- a/daemon/gdm-session-worker.c
++++ b/daemon/gdm-session-worker.c
+@@ -590,7 +590,6 @@ gdm_session_worker_process_custom_json_protocol (GdmSessionWorker            *wo
+ {
+         g_autoptr(GError) error = NULL;
+         g_autoptr(JsonParser) parser = NULL;
+-        g_autofree char *json_reply = NULL;
+ 
+         g_debug ("GdmSessionWorker: sending custom JSON protocol request: %s v%d",
+                  request->protocol_name, request->version);
+-- 
+2.51.0
+
+
+From f4f2531785eab3960e605b33d0b541a567dddf44 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Mon, 27 Apr 2026 19:39:36 +0200
+Subject: [PATCH 2/7] pam-extensions: Fix memory leaks in PAM extension response
+ cleanup
+
+The PAM conversation cleanup treated extension responses (ChoiceList,
+CustomJSON) as plain strings, leaking dynamically-allocated inner
+members (key, json) that are set via D-Bus calls.
+
+Add FREE macros for each extension response type that properly release
+inner members before the struct itself, and use them in a new
+gdm_session_worker_clear_pam_response() helper. PAM modules can also
+use these macros to avoid the same leaks on their side.
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/363>
+---
+ daemon/gdm-session-worker.c                   | 44 ++++++++++++++++---
+ .../gdm-choice-list-pam-extension.h           |  9 ++++
+ daemon/gdm-session-worker.c                   | 44 ++++++++++++++++---
+ .../gdm-choice-list-pam-extension.h           |  9 ++++
+ .../gdm-custom-json-pam-extension.h           | 11 +++++
+ 3 files changed, 57 insertions(+), 7 deletions(-)
+
+diff --git a/daemon/gdm-session-worker.c b/daemon/gdm-session-worker.c
+index 38221f5..ee702a3 100644
+--- a/daemon/gdm-session-worker.c
++++ b/daemon/gdm-session-worker.c
+@@ -668,15 +668,15 @@ gdm_session_worker_process_extended_pam_message (GdmSessionWorker          *work
+                 res = gdm_session_worker_process_choice_list_request (worker, list_request, list_response);
+ 
+                 if (! res) {
+-                        g_free (list_response);
++                        GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_FREE (list_response);
+                         return FALSE;
+                 }
+ 
+-                *response = GDM_PAM_EXTENSION_MESSAGE_TO_PAM_REPLY (list_response);
++                *response = GDM_PAM_EXTENSION_MESSAGE_TO_PAM_REPLY (g_steal_pointer (&list_response));
+                 return TRUE;
+         } else if (GDM_PAM_EXTENSION_MESSAGE_MATCH (extended_message, worker->extensions, GDM_PAM_EXTENSION_CUSTOM_JSON)) {
+                 GdmPamExtensionJSONProtocol *json_request = (GdmPamExtensionJSONProtocol *) extended_message;
+-                g_autofree GdmPamExtensionJSONProtocol *json_response = malloc (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE);
++                GdmPamExtensionJSONProtocol *json_response = malloc (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE);
+ 
+                 g_debug ("GdmSessionWorker: received extended pam message '%s'", GDM_PAM_EXTENSION_CUSTOM_JSON);
+ 
+@@ -685,6 +685,7 @@ gdm_session_worker_process_extended_pam_message (GdmSessionWorker          *work
+                                                               json_request->version);
+ 
+                 if (!gdm_session_worker_process_custom_json_protocol (worker, json_request, json_response)) {
++                        GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_FREE (json_response);
+                         return FALSE;
+                 }
+ 
+@@ -869,6 +870,36 @@ get_friendly_error_message (GdmSessionWorker *worker,
+         return get_generic_error_message (worker);
+ }
+ 
++static void
++gdm_session_worker_clear_pam_response (GdmSessionWorker         *worker,
++                                       const struct pam_message *message,
++                                       struct pam_response      *reply)
++{
++        if (reply->resp == NULL)
++                return;
++
++#ifdef SUPPORTS_PAM_EXTENSIONS
++        if (message->msg_style == PAM_BINARY_PROMPT) {
++                GdmPamExtensionMessage *extended_message;
++                extended_message = GDM_PAM_EXTENSION_MESSAGE_FROM_PAM_MESSAGE (message);
++
++                if (GDM_PAM_EXTENSION_MESSAGE_MATCH (extended_message, worker->extensions, GDM_PAM_EXTENSION_CHOICE_LIST)) {
++                        GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_FREE (
++                                GDM_PAM_EXTENSION_REPLY_TO_CHOICE_LIST_RESPONSE (reply));
++                } else if (GDM_PAM_EXTENSION_MESSAGE_MATCH (extended_message, worker->extensions, GDM_PAM_EXTENSION_CUSTOM_JSON)) {
++                        GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_FREE (
++                                GDM_PAM_EXTENSION_REPLY_TO_CUSTOM_JSON_RESPONSE (reply));
++                } else {
++                        free (reply->resp);
++                }
++                return;
++        }
++#endif
++
++        memset (reply->resp, 0, strlen (reply->resp));
++        free (reply->resp);
++}
++
+ static int
+ gdm_session_worker_pam_new_messages_handler (int                        number_of_messages,
+                                              const struct pam_message **messages,
+@@ -920,10 +951,9 @@ gdm_session_worker_pam_new_messages_handler (int                        number_o
+  out:
+         if (return_value != PAM_SUCCESS || responses == NULL) {
+                 for (i = 0; i < number_of_messages; i++) {
+-                        if (replies[i].resp != NULL) {
+-                                memset (replies[i].resp, 0, strlen (replies[i].resp));
+-                                free (replies[i].resp);
+-                        }
++                        gdm_session_worker_clear_pam_response (worker,
++                                                               messages[i],
++                                                               &replies[i]);
+                         memset (&replies[i], 0, sizeof (replies[i]));
+                 }
+                 free (replies);
+diff --git a/pam-extensions/gdm-choice-list-pam-extension.h b/pam-extensions/gdm-choice-list-pam-extension.h
+index 0e75ccc..4fb128d 100644
+--- a/pam-extensions/gdm-choice-list-pam-extension.h
++++ b/pam-extensions/gdm-choice-list-pam-extension.h
+@@ -67,4 +67,13 @@ typedef struct {
+ }
+ #define GDM_PAM_EXTENSION_REPLY_TO_CHOICE_LIST_RESPONSE(reply) ((GdmPamExtensionChoiceListResponse *) (void *) reply->resp)
+ 
++#define GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_FREE(response) \
++{ \
++        if ((response)->key != NULL) { \
++                memset ((response)->key, 0, strlen ((response)->key)); \
++                free ((response)->key); \
++        } \
++        free (response); \
++}
++
+ #endif
+diff --git a/pam-extensions/gdm-custom-json-pam-extension.h b/pam-extensions/gdm-custom-json-pam-extension.h
+index a50ae12..6103a5b 100644
+--- a/pam-extensions/gdm-custom-json-pam-extension.h
++++ b/pam-extensions/gdm-custom-json-pam-extension.h
+@@ -59,3 +59,14 @@ typedef struct {
+ 
+ #define GDM_PAM_EXTENSION_REPLY_TO_CUSTOM_JSON_RESPONSE(reply) \
+         ((GdmPamExtensionJSONProtocol *) (void *) reply->resp)
++
++#define GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_FREE(response) \
++{ \
++        if (response != NULL) { \
++                if ((response)->json != NULL) { \
++                        memset ((response)->json, 0, strlen ((response)->json)); \
++                        free ((response)->json); \
++                } \
++                free (response); \
++        } \
++}
+-- 
+2.51.0
+
+
+From 9e188d994b0aadc0f2df4b7600435c58f518238e Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Fri, 24 Jul 2026 16:49:53 +0200
+Subject: [PATCH 3/7] pam-extensions: Add a NULL guard when freeing a response
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/363>
+---
+ pam-extensions/gdm-choice-list-pam-extension.h | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/pam-extensions/gdm-choice-list-pam-extension.h b/pam-extensions/gdm-choice-list-pam-extension.h
+index 4fb128d59..354750593 100644
+--- a/pam-extensions/gdm-choice-list-pam-extension.h
++++ b/pam-extensions/gdm-choice-list-pam-extension.h
+@@ -69,11 +69,13 @@ typedef struct {
+ 
+ #define GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_FREE(response) \
+ { \
+-        if ((response)->key != NULL) { \
+-                memset ((response)->key, 0, strlen ((response)->key)); \
+-                free ((response)->key); \
++        if (response != NULL) { \
++                if ((response)->key != NULL) { \
++                        memset ((response)->key, 0, strlen ((response)->key)); \
++                        free ((response)->key); \
++                } \
++                free (response); \
+         } \
+-        free (response); \
+ }
+ 
+ #endif
+-- 
+2.51.0
+
+
+From e2ab7459c47c62a094c86cc888a760c3e0baa0ce Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Mon, 27 Apr 2026 22:23:34 +0200
+Subject: [PATCH 4/7] pam-extensions: Use explicit_bzero to zero sensitive
+ buffers
+
+Compilers may optimize away memset calls before free as dead stores.
+Use explicit_bzero when available to ensure sensitive PAM response
+data is actually zeroed. The detection is done in the common header
+so external PAM modules benefit as well, with a compiler barrier
+fallback for systems without explicit_bzero.
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/363>
+---
+ daemon/gdm-session-worker.c                   |  4 ++--
+ .../gdm-choice-list-pam-extension.h           |  2 +-
+ .../gdm-custom-json-pam-extension.h           |  2 +-
+ pam-extensions/gdm-pam-extensions-common.h    | 19 +++++++++++++++++++
+ 4 files changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/daemon/gdm-session-worker.c b/daemon/gdm-session-worker.c
+index 167bd00a6..0e920a28a 100644
+--- a/daemon/gdm-session-worker.c
++++ b/daemon/gdm-session-worker.c
+@@ -799,7 +799,7 @@ gdm_session_worker_process_pam_message (GdmSessionWorker          *worker,
+                         *response = strndup (user_answer, PAM_MAX_RESP_SIZE - 1);
+                 }
+ 
+-                memset (user_answer, '\0', strlen (user_answer));
++                gdm_pam_extension_zero_buffer (user_answer, strlen (user_answer));
+ 
+                 g_debug ("GdmSessionWorker: trying to get updated username");
+ 
+@@ -896,7 +896,7 @@ gdm_session_worker_clear_pam_response (GdmSessionWorker         *worker,
+         }
+ #endif
+ 
+-        memset (reply->resp, 0, strlen (reply->resp));
++        gdm_pam_extension_zero_buffer (reply->resp, strlen (reply->resp));
+         free (reply->resp);
+ }
+ 
+diff --git a/pam-extensions/gdm-choice-list-pam-extension.h b/pam-extensions/gdm-choice-list-pam-extension.h
+index 354750593..4081fec84 100644
+--- a/pam-extensions/gdm-choice-list-pam-extension.h
++++ b/pam-extensions/gdm-choice-list-pam-extension.h
+@@ -71,7 +71,7 @@ typedef struct {
+ { \
+         if (response != NULL) { \
+                 if ((response)->key != NULL) { \
+-                        memset ((response)->key, 0, strlen ((response)->key)); \
++                        gdm_pam_extension_zero_buffer ((response)->key, strlen ((response)->key)); \
+                         free ((response)->key); \
+                 } \
+                 free (response); \
+diff --git a/pam-extensions/gdm-custom-json-pam-extension.h b/pam-extensions/gdm-custom-json-pam-extension.h
+index 6103a5b3d..5487fe17b 100644
+--- a/pam-extensions/gdm-custom-json-pam-extension.h
++++ b/pam-extensions/gdm-custom-json-pam-extension.h
+@@ -64,7 +64,7 @@ typedef struct {
+ { \
+         if (response != NULL) { \
+                 if ((response)->json != NULL) { \
+-                        memset ((response)->json, 0, strlen ((response)->json)); \
++                        gdm_pam_extension_zero_buffer ((response)->json, strlen ((response)->json)); \
+                         free ((response)->json); \
+                 } \
+                 free (response); \
+diff --git a/pam-extensions/gdm-pam-extensions-common.h b/pam-extensions/gdm-pam-extensions-common.h
+index 9a8033f27..03238a9cb 100644
+--- a/pam-extensions/gdm-pam-extensions-common.h
++++ b/pam-extensions/gdm-pam-extensions-common.h
+@@ -30,6 +30,25 @@
+ 
+ #include <security/pam_appl.h>
+ 
++#if (defined(__GLIBC__) && defined(__GLIBC_MINOR__) && \
++    (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 25)) && \
++    (defined(_GNU_SOURCE) || defined(_DEFAULT_SOURCE))) || \
++    defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__APPLE__)
++
++#define gdm_pam_extension_zero_buffer(s, n) do { \
++    explicit_bzero((s), (n)); \
++} while(0)
++
++#else
++
++#define gdm_pam_extension_zero_buffer(s, n) do { \
++    memset((s), 0, (n)); \
++    /* Memory barrier to prevent the compiler from erasing the memset */ \
++    __asm__ __volatile__ ("" : : "r"(s) : "memory"); \
++} while(0)
++
++#endif
++
+ typedef struct {
+         uint32_t length;
+ 
+-- 
+2.51.0
+
+
+From 9275c9ca5aa0b2fbda77f111237b6216f3e8b2c0 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Mon, 27 Jul 2026 11:53:20 +0200
+Subject: [PATCH 5/7] pam-extensions: Convert macros to static inline functions
+
+Replace all preprocessor macros in PAM extensions headers with static
+inline functions. This conversion provides better type safety and
+debugging while maintaining the header-only implementation.
+
+Complex macros using GCC statement expressions
+(GDM_PAM_EXTENSION_MESSAGE_INVALID_TYPE, GDM_PAM_EXTENSION_LOOK_UP_TYPE)
+are now proper functions with standard control flow. Simple cast and
+check macros become static inline functions for consistency.
+
+Add g_autoptr cleanup support for response types.
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/363>
+---
+ daemon/gdm-session-worker.c                   |  58 ++--
+ .../gdm-choice-list-pam-extension.h           |  63 +++--
+ .../gdm-custom-json-pam-extension.h           |  74 +++--
+ pam-extensions/gdm-pam-extensions-common.h    | 256 ++++++++++--------
+ .../gdm-choice-list-pam-extension.h           |  63 +++--
+ .../gdm-custom-json-pam-extension.h           |  74 +++--
+ pam-extensions/gdm-pam-extensions-common.h    | 256 ++++++++++--------
+ pam-extensions/gdm-pam-extensions.h           |   5 +-
+ 5 files changed, 264 insertions(+), 196 deletions(-)
+
+diff --git a/daemon/gdm-session-worker.c b/daemon/gdm-session-worker.c
+index b817072..52aa921 100644
+--- a/daemon/gdm-session-worker.c
++++ b/daemon/gdm-session-worker.c
+@@ -645,51 +645,55 @@ gdm_session_worker_process_extended_pam_message (GdmSessionWorker          *work
+         GdmPamExtensionMessage *extended_message;
+         gboolean res;
+ 
+-        extended_message = GDM_PAM_EXTENSION_MESSAGE_FROM_PAM_MESSAGE (query);
++        extended_message = gdm_pam_extension_message_from_pam_message (query);
+ 
+-        if (GDM_PAM_EXTENSION_MESSAGE_TRUNCATED (extended_message)) {
++        if (gdm_pam_extension_message_truncated (extended_message)) {
+                 g_warning ("PAM service requested binary response for truncated query");
+                 return FALSE;
+         }
+ 
+-        if (GDM_PAM_EXTENSION_MESSAGE_INVALID_TYPE (extended_message)) {
++        if (gdm_pam_extension_message_invalid_type (extended_message)) {
+                 g_warning ("PAM service requested binary response for unadvertised query type");
+                 return FALSE;
+         }
+ 
+-        if (GDM_PAM_EXTENSION_MESSAGE_MATCH (extended_message, worker->extensions, GDM_PAM_EXTENSION_CHOICE_LIST)) {
++        if (gdm_pam_extension_message_match (extended_message, worker->extensions, GDM_PAM_EXTENSION_CHOICE_LIST)) {
++                g_autoptr(GdmPamExtensionChoiceListResponse) list_response = NULL;
+                 GdmPamExtensionChoiceListRequest *list_request = (GdmPamExtensionChoiceListRequest *) extended_message;
+-                GdmPamExtensionChoiceListResponse *list_response = malloc (GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_SIZE);
++
++                list_response = malloc (GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_SIZE);
++                if (list_response == NULL)
++                        return FALSE;
+ 
+                 g_debug ("GdmSessionWorker: received extended pam message '%s'", GDM_PAM_EXTENSION_CHOICE_LIST);
+ 
+-                GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_INIT (list_response);
++                gdm_pam_extension_choice_list_response_init (list_response);
+ 
+                 res = gdm_session_worker_process_choice_list_request (worker, list_request, list_response);
+ 
+-                if (! res) {
+-                        GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_FREE (list_response);
++                if (!res)
+                         return FALSE;
+-                }
+ 
+-                *response = GDM_PAM_EXTENSION_MESSAGE_TO_PAM_REPLY (g_steal_pointer (&list_response));
++                *response = gdm_pam_extension_message_to_pam_reply (g_steal_pointer (&list_response));
+                 return TRUE;
+-        } else if (GDM_PAM_EXTENSION_MESSAGE_MATCH (extended_message, worker->extensions, GDM_PAM_EXTENSION_CUSTOM_JSON)) {
++        } else if (gdm_pam_extension_message_match (extended_message, worker->extensions, GDM_PAM_EXTENSION_CUSTOM_JSON)) {
++                g_autoptr(GdmPamExtensionJSONProtocol) json_response = NULL;
+                 GdmPamExtensionJSONProtocol *json_request = (GdmPamExtensionJSONProtocol *) extended_message;
+-                GdmPamExtensionJSONProtocol *json_response = malloc (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE);
++
++                json_response = malloc (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE);
++                if (json_response == NULL)
++                        return FALSE;
+ 
+                 g_debug ("GdmSessionWorker: received extended pam message '%s'", GDM_PAM_EXTENSION_CUSTOM_JSON);
+ 
+-                GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_INIT (json_response,
+-                                                              json_request->protocol_name,
+-                                                              json_request->version);
++                gdm_pam_extension_custom_json_response_init (json_response,
++                                                             json_request->protocol_name,
++                                                             json_request->version);
+ 
+-                if (!gdm_session_worker_process_custom_json_protocol (worker, json_request, json_response)) {
+-                        GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_FREE (json_response);
++                if (!gdm_session_worker_process_custom_json_protocol (worker, json_request, json_response))
+                         return FALSE;
+-                }
+ 
+-                *response = GDM_PAM_EXTENSION_MESSAGE_TO_PAM_REPLY (g_steal_pointer (&json_response));
++                *response = gdm_pam_extension_message_to_pam_reply (g_steal_pointer (&json_response));
+                 return TRUE;
+         } else {
+                 g_debug ("GdmSessionWorker: received extended pam message of unknown type %u", (unsigned int) extended_message->type);
+@@ -881,14 +885,14 @@ gdm_session_worker_clear_pam_response (GdmSessionWorker         *worker,
+ #ifdef SUPPORTS_PAM_EXTENSIONS
+         if (message->msg_style == PAM_BINARY_PROMPT) {
+                 GdmPamExtensionMessage *extended_message;
+-                extended_message = GDM_PAM_EXTENSION_MESSAGE_FROM_PAM_MESSAGE (message);
+-
+-                if (GDM_PAM_EXTENSION_MESSAGE_MATCH (extended_message, worker->extensions, GDM_PAM_EXTENSION_CHOICE_LIST)) {
+-                        GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_FREE (
+-                                GDM_PAM_EXTENSION_REPLY_TO_CHOICE_LIST_RESPONSE (reply));
+-                } else if (GDM_PAM_EXTENSION_MESSAGE_MATCH (extended_message, worker->extensions, GDM_PAM_EXTENSION_CUSTOM_JSON)) {
+-                        GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_FREE (
+-                                GDM_PAM_EXTENSION_REPLY_TO_CUSTOM_JSON_RESPONSE (reply));
++                extended_message = gdm_pam_extension_message_from_pam_message (message);
++
++                if (gdm_pam_extension_message_match (extended_message, worker->extensions, GDM_PAM_EXTENSION_CHOICE_LIST)) {
++                        gdm_pam_extension_choice_list_response_free (
++                                gdm_pam_extension_reply_to_choice_list_response (reply));
++                } else if (gdm_pam_extension_message_match (extended_message, worker->extensions, GDM_PAM_EXTENSION_CUSTOM_JSON)) {
++                        gdm_pam_extension_custom_json_response_free (
++                                gdm_pam_extension_reply_to_custom_json_response (reply));
+                 } else {
+                         free (reply->resp);
+                 }
+@@ -1260,7 +1264,9 @@ gdm_session_worker_initialize_pam (GdmSessionWorker   *worker,
+ 
+ #ifdef SUPPORTS_PAM_EXTENSIONS
+         if (extensions != NULL) {
+-                GDM_PAM_EXTENSION_ADVERTISE_SUPPORTED_EXTENSIONS (gdm_pam_extension_environment_block, extensions);
++                gdm_pam_extension_advertise_supported_extensions (gdm_pam_extension_environment_block,
++                                                                  sizeof (gdm_pam_extension_environment_block),
++                                                                  extensions);
+         }
+ #endif
+ 
+diff --git a/pam-extensions/gdm-choice-list-pam-extension.h b/pam-extensions/gdm-choice-list-pam-extension.h
+index 4081fec..114b9a2 100644
+--- a/pam-extensions/gdm-choice-list-pam-extension.h
++++ b/pam-extensions/gdm-choice-list-pam-extension.h
+@@ -17,8 +17,7 @@
+  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+  *
+  */
+-#ifndef GDM_CHOICE_LIST_PAM_EXTENSION_H
+-#define GDM_CHOICE_LIST_PAM_EXTENSION_H
++#pragma once
+ 
+ #include "gdm-pam-extensions-common.h"
+ 
+@@ -49,33 +48,47 @@ typedef struct {
+ 
+ #define GDM_CHOICE_LIST_SIZE(num_items) (offsetof(GdmChoiceList, items) + (num_items) * sizeof (GdmChoiceListItems))
+ #define GDM_PAM_EXTENSION_CHOICE_LIST_REQUEST_SIZE(num_items) (offsetof(GdmPamExtensionChoiceListRequest, list) + GDM_CHOICE_LIST_SIZE((num_items)))
+-#define GDM_PAM_EXTENSION_CHOICE_LIST_REQUEST_INIT(request, title, num_items) \
+-{ \
+-        int _n = num_items; \
+-        GDM_PAM_EXTENSION_LOOK_UP_TYPE (GDM_PAM_EXTENSION_CHOICE_LIST, &request->header.type); \
+-        request->header.length = htobe32 (GDM_PAM_EXTENSION_CHOICE_LIST_REQUEST_SIZE(_n)); \
+-        request->prompt_message = title; \
+-        request->list.number_of_items = _n; \
++
++static inline void
++gdm_pam_extension_choice_list_request_init (GdmPamExtensionChoiceListRequest *request,
++                                            const char                       *title,
++                                            int                               num_items)
++{
++        gdm_pam_extension_look_up_type (GDM_PAM_EXTENSION_CHOICE_LIST, &request->header.type);
++        request->header.length = htobe32 (GDM_PAM_EXTENSION_CHOICE_LIST_REQUEST_SIZE(num_items));
++        request->prompt_message = (char *) title;
++        request->list.number_of_items = num_items;
+ }
+ 
+ #define GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_SIZE sizeof (GdmPamExtensionChoiceListResponse)
+-#define GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_INIT(response) \
+-{ \
+-        GDM_PAM_EXTENSION_LOOK_UP_TYPE (GDM_PAM_EXTENSION_CHOICE_LIST, &response->header.type); \
+-        response->header.length = htobe32 (GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_SIZE); \
+-        response->key = NULL; \
++
++static inline void
++gdm_pam_extension_choice_list_response_init (GdmPamExtensionChoiceListResponse *response)
++{
++        gdm_pam_extension_look_up_type (GDM_PAM_EXTENSION_CHOICE_LIST, &response->header.type);
++        response->header.length = htobe32 (GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_SIZE);
++        response->key = NULL;
++}
++
++static inline GdmPamExtensionChoiceListResponse *
++gdm_pam_extension_reply_to_choice_list_response (const struct pam_response *reply)
++{
++        return (GdmPamExtensionChoiceListResponse *) (void *) reply->resp;
+ }
+-#define GDM_PAM_EXTENSION_REPLY_TO_CHOICE_LIST_RESPONSE(reply) ((GdmPamExtensionChoiceListResponse *) (void *) reply->resp)
+-
+-#define GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_FREE(response) \
+-{ \
+-        if (response != NULL) { \
+-                if ((response)->key != NULL) { \
+-                        gdm_pam_extension_zero_buffer ((response)->key, strlen ((response)->key)); \
+-                        free ((response)->key); \
+-                } \
+-                free (response); \
+-        } \
++
++static inline void
++gdm_pam_extension_choice_list_response_free (GdmPamExtensionChoiceListResponse *response)
++{
++        if (response == NULL)
++                return;
++
++        if (response->key != NULL) {
++               gdm_pam_extension_zero_buffer (response->key, strlen (response->key));
++               free (response->key);
++        }
++        free (response);
+ }
+ 
++#ifdef __G_LIB_H__
++G_DEFINE_AUTOPTR_CLEANUP_FUNC (GdmPamExtensionChoiceListResponse, gdm_pam_extension_choice_list_response_free)
+ #endif
+diff --git a/pam-extensions/gdm-custom-json-pam-extension.h b/pam-extensions/gdm-custom-json-pam-extension.h
+index 5487fe1..4694676 100644
+--- a/pam-extensions/gdm-custom-json-pam-extension.h
++++ b/pam-extensions/gdm-custom-json-pam-extension.h
+@@ -35,38 +35,54 @@ typedef struct {
+ #define GDM_PAM_EXTENSION_CUSTOM_JSON "org.gnome.DisplayManager.UserVerifier.CustomJSON"
+ #define GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE sizeof (GdmPamExtensionJSONProtocol)
+ 
+-#define GDM_PAM_EXTENSION_CUSTOM_JSON_REQUEST_INIT(request, proto_name, proto_version, json_str) \
+-{ \
+-        size_t proto_len = strnlen ((proto_name), sizeof ((request)->protocol_name) - 1); \
+-        GDM_PAM_EXTENSION_LOOK_UP_TYPE (GDM_PAM_EXTENSION_CUSTOM_JSON, &((request)->header.type)); \
+-        (request)->header.length = htobe32 (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE); \
+-        memcpy ((char *)(request)->protocol_name, (proto_name), proto_len); \
+-        ((char *)((request)->protocol_name))[proto_len] = '\0'; \
+-        (request)->version = (proto_version); \
+-        (request)->json = (char *) (json_str); \
++static inline void
++gdm_pam_extension_custom_json_request_init (GdmPamExtensionJSONProtocol *request,
++                                            const char                  *proto_name,
++                                            unsigned int                 proto_version,
++                                            const char                  *json_str)
++{
++        size_t proto_len = strnlen (proto_name, sizeof (request->protocol_name) - 1);
++        gdm_pam_extension_look_up_type (GDM_PAM_EXTENSION_CUSTOM_JSON, &request->header.type);
++        request->header.length = htobe32 (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE);
++        memcpy ((char *)request->protocol_name, proto_name, proto_len);
++        ((char *)(request->protocol_name))[proto_len] = '\0';
++        request->version = proto_version;
++        request->json = (char *) json_str;
+ }
+ 
+-#define GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_INIT(response, proto_name, proto_version) \
+-{ \
+-        size_t proto_len = strnlen ((proto_name), sizeof ((response)->protocol_name) - 1); \
+-        GDM_PAM_EXTENSION_LOOK_UP_TYPE (GDM_PAM_EXTENSION_CUSTOM_JSON, &((response)->header.type)); \
+-        (response)->header.length = htobe32 (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE); \
+-        memcpy ((char *)(response)->protocol_name, (proto_name), proto_len); \
+-        ((char *)((response)->protocol_name))[proto_len] = '\0'; \
+-        (response)->version = (proto_version); \
+-        (response)->json = NULL; \
++static inline void
++gdm_pam_extension_custom_json_response_init (GdmPamExtensionJSONProtocol *response,
++                                             const char                  *proto_name,
++                                             unsigned int                 proto_version)
++{
++        size_t proto_len = strnlen (proto_name, sizeof (response->protocol_name) - 1);
++        gdm_pam_extension_look_up_type (GDM_PAM_EXTENSION_CUSTOM_JSON, &response->header.type);
++        response->header.length = htobe32 (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE);
++        memcpy ((char *)response->protocol_name, proto_name, proto_len);
++        ((char *)(response->protocol_name))[proto_len] = '\0';
++        response->version = proto_version;
++        response->json = NULL;
+ }
+ 
+-#define GDM_PAM_EXTENSION_REPLY_TO_CUSTOM_JSON_RESPONSE(reply) \
+-        ((GdmPamExtensionJSONProtocol *) (void *) reply->resp)
++static inline GdmPamExtensionJSONProtocol *
++gdm_pam_extension_reply_to_custom_json_response (const struct pam_response *reply)
++{
++        return (GdmPamExtensionJSONProtocol *) (void *) reply->resp;
++}
++
++static inline void
++gdm_pam_extension_custom_json_response_free (GdmPamExtensionJSONProtocol *response)
++{
++        if (response == NULL)
++                return;
+ 
+-#define GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_FREE(response) \
+-{ \
+-        if (response != NULL) { \
+-                if ((response)->json != NULL) { \
+-                        gdm_pam_extension_zero_buffer ((response)->json, strlen ((response)->json)); \
+-                        free ((response)->json); \
+-                } \
+-                free (response); \
+-        } \
++        if (response->json != NULL) {
++                gdm_pam_extension_zero_buffer (response->json, strlen (response->json));
++                free (response->json);
++        }
++        free (response);
+ }
++
++#ifdef __G_LIB_H__
++G_DEFINE_AUTOPTR_CLEANUP_FUNC (GdmPamExtensionJSONProtocol, gdm_pam_extension_custom_json_response_free)
++#endif
+diff --git a/pam-extensions/gdm-pam-extensions-common.h b/pam-extensions/gdm-pam-extensions-common.h
+index 03238a9..c7906e1 100644
+--- a/pam-extensions/gdm-pam-extensions-common.h
++++ b/pam-extensions/gdm-pam-extensions-common.h
+@@ -17,137 +17,173 @@
+  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+  *
+  */
+-#ifndef GDM_PAM_EXTENSIONS_COMMON_H
+-#define GDM_PAM_EXTENSIONS_COMMON_H
+ 
+-#include <alloca.h>
++#pragma once
++
+ #include <endian.h>
++#include <limits.h>
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
++#include <stdlib.h>
+ #include <string.h>
+-#include <limits.h>
+ 
+ #include <security/pam_appl.h>
+ 
++typedef struct {
++        uint32_t length;
++
++        unsigned char type;
++        unsigned char data[];
++} GdmPamExtensionMessage;
++
++static inline void
++gdm_pam_extension_zero_buffer (void   *s,
++                               size_t  n)
++{
+ #if (defined(__GLIBC__) && defined(__GLIBC_MINOR__) && \
+     (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 25)) && \
+     (defined(_GNU_SOURCE) || defined(_DEFAULT_SOURCE))) || \
+     defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__APPLE__)
++        explicit_bzero (s, n);
++#else
++        memset (s, 0, n);
++        __asm__ __volatile__ ("" : : "r"(s) : "memory");
++#endif
++}
+ 
+-#define gdm_pam_extension_zero_buffer(s, n) do { \
+-    explicit_bzero((s), (n)); \
+-} while(0)
++static inline GdmPamExtensionMessage *
++gdm_pam_extension_message_from_pam_message (const struct pam_message *query)
++{
++        return (GdmPamExtensionMessage *) (void *) query->msg;
++}
+ 
+-#else
++static inline char *
++gdm_pam_extension_message_to_pam_reply (void *msg)
++{
++        return (char *) msg;
++}
+ 
+-#define gdm_pam_extension_zero_buffer(s, n) do { \
+-    memset((s), 0, (n)); \
+-    /* Memory barrier to prevent the compiler from erasing the memset */ \
+-    __asm__ __volatile__ ("" : : "r"(s) : "memory"); \
+-} while(0)
++static inline void
++gdm_pam_extension_message_to_binary_prompt_message (GdmPamExtensionMessage *extended_message,
++                                                    struct pam_message     *binary_message)
++{
++        binary_message->msg_style = PAM_BINARY_PROMPT;
++        binary_message->msg = (void *) extended_message;
++}
+ 
+-#endif
++static inline bool
++gdm_pam_extension_message_truncated (const GdmPamExtensionMessage *msg)
++{
++        return be32toh (msg->length) < sizeof (GdmPamExtensionMessage);
++}
+ 
+-typedef struct {
+-        uint32_t length;
++static inline bool
++gdm_pam_extension_message_invalid_type (const GdmPamExtensionMessage *msg)
++{
++        bool _invalid = true;
++        int _n = -1;
++        const char *_supported_extensions;
+ 
+-        unsigned char type;
+-        unsigned char data[];
+-} GdmPamExtensionMessage;
++        _supported_extensions = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS");
++        if (_supported_extensions != NULL) {
++                const char *_p = _supported_extensions;
++                while (*_p != '\0' && _n < UCHAR_MAX) {
++                        size_t _length;
++                        _length = strcspn (_p, " ");
++                        if (_length > 0)
++                                _n++;
++                        _p += _length;
++                        _length = strspn (_p, " ");
++                        _p += _length;
++                }
++                if (_n >= msg->type)
++                        _invalid = false;
++        }
+ 
+-#define GDM_PAM_EXTENSION_MESSAGE_FROM_PAM_MESSAGE(query) (GdmPamExtensionMessage *) (void *) query->msg
+-#define GDM_PAM_EXTENSION_MESSAGE_TO_PAM_REPLY(msg) (char *) (void *) msg
+-#define GDM_PAM_EXTENSION_MESSAGE_TO_BINARY_PROMPT_MESSAGE(extended_message, binary_message) \
+-{ \
+-        (binary_message)->msg_style = PAM_BINARY_PROMPT; \
+-        (binary_message)->msg = (void *) extended_message; \
++        return _invalid;
+ }
+-#define GDM_PAM_EXTENSION_MESSAGE_TRUNCATED(msg) be32toh(msg->length) < sizeof (GdmPamExtensionMessage)
+-#define GDM_PAM_EXTENSION_MESSAGE_INVALID_TYPE(msg) \
+-({ \
+-        bool _invalid = true; \
+-        int _n = -1; \
+-        const char *_supported_extensions; \
+-        _supported_extensions = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS"); \
+-        if (_supported_extensions != NULL) { \
+-                const char *_p = _supported_extensions; \
+-                while (*_p != '\0' && _n < UCHAR_MAX) { \
+-                        size_t _length; \
+-                        _length = strcspn (_p, " "); \
+-                        if (_length > 0) \
+-                                _n++; \
+-                        _p += _length; \
+-                        _length = strspn (_p, " "); \
+-                        _p += _length; \
+-                } \
+-                if (_n >= msg->type) \
+-                        _invalid = false; \
+-        } \
+-        _invalid; \
+-})
+-#define GDM_PAM_EXTENSION_MESSAGE_MATCH(msg, supported_extensions, name) (strcmp (supported_extensions[msg->type], name) == 0)
+-
+-/* environment block should be a statically allocated chunk of memory.  This is important because
+- * putenv() will leak otherwise (and setenv isn't thread safe)
+- */
+-#define GDM_PAM_EXTENSION_ADVERTISE_SUPPORTED_EXTENSIONS(environment_block, supported_extensions) \
+-{ \
+-        size_t _size = 0; \
+-        unsigned char _t, _num_chunks; \
+-        char *_p; \
+-        _p = environment_block; \
+-        _p = stpncpy (_p, "GDM_SUPPORTED_PAM_EXTENSIONS", sizeof(environment_block)); \
+-        *_p = '\0'; \
+-        _size += strlen (environment_block); \
+-        for (_t = 0; supported_extensions[_t] != NULL && _t < UCHAR_MAX; _t++) {\
+-                size_t _next_chunk = strlen (supported_extensions[_t]) + strlen (" "); \
+-                if (_size + _next_chunk >= sizeof (environment_block)) \
+-                        break; \
+-                _size += _next_chunk; \
+-        }\
+-        _num_chunks = _t; \
+-        if (_t != 0) { \
+-                _p = stpcpy (_p, "="); \
+-                for (_t = 0; _t < _num_chunks; _t++) { \
+-                        if (_t != 0) \
+-                                _p = stpcpy (_p, " "); \
+-                        _p = stpcpy (_p, supported_extensions[_t]); \
+-                } \
+-                *_p = '\0'; \
+-                putenv (environment_block); \
+-        } \
++
++static inline bool
++gdm_pam_extension_message_match (const GdmPamExtensionMessage *msg,
++                                 char * const                 *supported_extensions,
++                                 const char                   *name)
++{
++        return strcmp (supported_extensions[msg->type], name) == 0;
+ }
+ 
+-#define GDM_PAM_EXTENSION_LOOK_UP_TYPE(name, extension_type) \
+-({ \
+-        bool _supported = false; \
+-        unsigned char _t = 0; \
+-        const char *_supported_extensions; \
+-        _supported_extensions = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS"); \
+-        if (_supported_extensions != NULL) { \
+-                const char *_p = _supported_extensions; \
+-                while (*_p != '\0') { \
+-                        size_t _length; \
+-                        _length = strcspn (_p, " "); \
+-                        if (strncmp (_p, name, _length) == 0) { \
+-                                _supported = true; \
+-                                break; \
+-                        } \
+-                        _p += _length; \
+-                        _length = strspn (_p, " "); \
+-                        _p += _length; \
+-                        if (_t >= UCHAR_MAX) { \
+-                                break; \
+-                        } \
+-                        _t++; \
+-                } \
+-                if (_supported && extension_type != NULL) \
+-                        *extension_type = _t; \
+-        } \
+-        _supported; \
+-})
+-
+-#define GDM_PAM_EXTENSION_SUPPORTED(name) GDM_PAM_EXTENSION_LOOK_UP_TYPE(name, (unsigned char *) NULL)
++static inline bool
++gdm_pam_extension_look_up_type (const char    *name,
++                                unsigned char *extension_type)
++{
++        bool _supported = false;
++        unsigned char _t = 0;
++        const char *_supported_extensions;
+ 
+-#endif
++        _supported_extensions = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS");
++        if (_supported_extensions != NULL) {
++                const char *_p = _supported_extensions;
++                while (*_p != '\0') {
++                        size_t _length;
++                        _length = strcspn (_p, " ");
++                        if (strncmp (_p, name, _length) == 0) {
++                                _supported = true;
++                                break;
++                        }
++                        _p += _length;
++                        _length = strspn (_p, " ");
++                        _p += _length;
++                        if (_t >= UCHAR_MAX) {
++                                break;
++                        }
++                        _t++;
++                }
++                if (_supported && extension_type != NULL)
++                        *extension_type = _t;
++        }
++
++        return _supported;
++}
++
++static inline bool
++gdm_pam_extension_supported (const char *name)
++{
++        return gdm_pam_extension_look_up_type (name, NULL);
++}
++
++/* environment_block should be a statically allocated chunk of memory. This is
++ * important because putenv() will leak otherwise (and setenv isn't thread safe)
++ */
++static inline void
++gdm_pam_extension_advertise_supported_extensions (char               *environment_block,
++                                                  size_t              block_size,
++                                                  const char * const *supported_extensions)
++{
++        size_t _size = 0;
++        unsigned char _t, _num_chunks;
++        char *_p;
++
++        _p = environment_block;
++        _p = stpncpy (_p, "GDM_SUPPORTED_PAM_EXTENSIONS", block_size);
++        *_p = '\0';
++        _size += strlen (environment_block);
++
++        for (_t = 0; supported_extensions[_t] != NULL && _t < UCHAR_MAX; _t++) {
++                size_t _next_chunk = strlen (supported_extensions[_t]) + strlen (" ");
++                if (_size + _next_chunk >= block_size)
++                        break;
++                _size += _next_chunk;
++        }
++        _num_chunks = _t;
++
++        if (_t != 0) {
++                _p = stpcpy (_p, "=");
++                for (_t = 0; _t < _num_chunks; _t++) {
++                        if (_t != 0)
++                                _p = stpcpy (_p, " ");
++                        _p = stpcpy (_p, supported_extensions[_t]);
++                }
++                *_p = '\0';
++                putenv (environment_block);
++        }
++}
+diff --git a/pam-extensions/gdm-pam-extensions.h b/pam-extensions/gdm-pam-extensions.h
+index 9df8e37..0902e21 100644
+--- a/pam-extensions/gdm-pam-extensions.h
++++ b/pam-extensions/gdm-pam-extensions.h
+@@ -18,10 +18,7 @@
+  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+  *
+  */
+-#ifndef GDM_PAM_EXTENSIONS_H
+-#define GDM_PAM_EXTENSIONS_H
++#pragma once
+ 
+ #include "gdm-choice-list-pam-extension.h"
+ #include "gdm-custom-json-pam-extension.h"
+-
+-#endif
+-- 
+2.51.0
+
+
+From 25c3bc0d628ee0e7fbc051d9bfb701c41921a44a Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Mon, 27 Jul 2026 12:00:59 +0200
+Subject: [PATCH 6/7] pam-extensions: Simplify implementation control flow
+
+Simplify logic in message_invalid_type, look_up_type, and advertise
+functions. Factor out shared code in custom JSON init functions.
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/363>
+---
+ .../gdm-custom-json-pam-extension.h           |  28 ++--
+ pam-extensions/gdm-pam-extensions-common.h    | 133 +++++++++---------
+ 2 files changed, 83 insertions(+), 78 deletions(-)
+
+diff --git a/pam-extensions/gdm-custom-json-pam-extension.h b/pam-extensions/gdm-custom-json-pam-extension.h
+index 46946769c..d9cc7f453 100644
+--- a/pam-extensions/gdm-custom-json-pam-extension.h
++++ b/pam-extensions/gdm-custom-json-pam-extension.h
+@@ -35,18 +35,27 @@ typedef struct {
+ #define GDM_PAM_EXTENSION_CUSTOM_JSON "org.gnome.DisplayManager.UserVerifier.CustomJSON"
+ #define GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE sizeof (GdmPamExtensionJSONProtocol)
+ 
++static inline void
++init_json_protocol_base (GdmPamExtensionJSONProtocol *protocol,
++                         const char                  *proto_name,
++                         unsigned int                 proto_version)
++{
++        size_t proto_len = strnlen (proto_name, sizeof (protocol->protocol_name) - 1);
++
++        gdm_pam_extension_look_up_type (GDM_PAM_EXTENSION_CUSTOM_JSON, &protocol->header.type);
++        protocol->header.length = htobe32 (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE);
++        memcpy ((char *) protocol->protocol_name, proto_name, proto_len);
++        ((char *) protocol->protocol_name)[proto_len] = '\0';
++        protocol->version = proto_version;
++}
++
+ static inline void
+ gdm_pam_extension_custom_json_request_init (GdmPamExtensionJSONProtocol *request,
+                                             const char                  *proto_name,
+                                             unsigned int                 proto_version,
+                                             const char                  *json_str)
+ {
+-        size_t proto_len = strnlen (proto_name, sizeof (request->protocol_name) - 1);
+-        gdm_pam_extension_look_up_type (GDM_PAM_EXTENSION_CUSTOM_JSON, &request->header.type);
+-        request->header.length = htobe32 (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE);
+-        memcpy ((char *)request->protocol_name, proto_name, proto_len);
+-        ((char *)(request->protocol_name))[proto_len] = '\0';
+-        request->version = proto_version;
++        init_json_protocol_base (request, proto_name, proto_version);
+         request->json = (char *) json_str;
+ }
+ 
+@@ -55,12 +64,7 @@ gdm_pam_extension_custom_json_response_init (GdmPamExtensionJSONProtocol *respon
+                                              const char                  *proto_name,
+                                              unsigned int                 proto_version)
+ {
+-        size_t proto_len = strnlen (proto_name, sizeof (response->protocol_name) - 1);
+-        gdm_pam_extension_look_up_type (GDM_PAM_EXTENSION_CUSTOM_JSON, &response->header.type);
+-        response->header.length = htobe32 (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE);
+-        memcpy ((char *)response->protocol_name, proto_name, proto_len);
+-        ((char *)(response->protocol_name))[proto_len] = '\0';
+-        response->version = proto_version;
++        init_json_protocol_base (response, proto_name, proto_version);
+         response->json = NULL;
+ }
+ 
+diff --git a/pam-extensions/gdm-pam-extensions-common.h b/pam-extensions/gdm-pam-extensions-common.h
+index c7906e153..7904b77d5 100644
+--- a/pam-extensions/gdm-pam-extensions-common.h
++++ b/pam-extensions/gdm-pam-extensions-common.h
+@@ -81,27 +81,24 @@ gdm_pam_extension_message_truncated (const GdmPamExtensionMessage *msg)
+ static inline bool
+ gdm_pam_extension_message_invalid_type (const GdmPamExtensionMessage *msg)
+ {
+-        bool _invalid = true;
+-        int _n = -1;
+-        const char *_supported_extensions;
+-
+-        _supported_extensions = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS");
+-        if (_supported_extensions != NULL) {
+-                const char *_p = _supported_extensions;
+-                while (*_p != '\0' && _n < UCHAR_MAX) {
+-                        size_t _length;
+-                        _length = strcspn (_p, " ");
+-                        if (_length > 0)
+-                                _n++;
+-                        _p += _length;
+-                        _length = strspn (_p, " ");
+-                        _p += _length;
+-                }
+-                if (_n >= msg->type)
+-                        _invalid = false;
++        const char *env;
++        const char *p;
++        int count = 0;
++
++        env = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS");
++        if (env == NULL)
++                return true;
++
++        p = env;
++        while (*p != '\0' && count <= UCHAR_MAX) {
++                size_t len = strcspn (p, " ");
++                if (len > 0)
++                        count++;
++                p += len;
++                p += strspn (p, " ");
+         }
+ 
+-        return _invalid;
++        return msg->type >= count;
+ }
+ 
+ static inline bool
+@@ -116,33 +113,34 @@ static inline bool
+ gdm_pam_extension_look_up_type (const char    *name,
+                                 unsigned char *extension_type)
+ {
+-        bool _supported = false;
+-        unsigned char _t = 0;
+-        const char *_supported_extensions;
+-
+-        _supported_extensions = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS");
+-        if (_supported_extensions != NULL) {
+-                const char *_p = _supported_extensions;
+-                while (*_p != '\0') {
+-                        size_t _length;
+-                        _length = strcspn (_p, " ");
+-                        if (strncmp (_p, name, _length) == 0) {
+-                                _supported = true;
+-                                break;
+-                        }
+-                        _p += _length;
+-                        _length = strspn (_p, " ");
+-                        _p += _length;
+-                        if (_t >= UCHAR_MAX) {
+-                                break;
+-                        }
+-                        _t++;
++        const char *env;
++        const char *p;
++        size_t index = 0;
++
++        env = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS");
++        if (env == NULL)
++                return false;
++
++        p = env;
++        while (*p != '\0') {
++                size_t len = strcspn (p, " ");
++
++                if (len > 0 && strncmp (p, name, len) == 0 && name[len] == '\0') {
++                        if (extension_type != NULL)
++                                *extension_type = index;
++                        return true;
+                 }
+-                if (_supported && extension_type != NULL)
+-                        *extension_type = _t;
++
++                p += len;
++                p += strspn (p, " ");
++
++                if (index >= UCHAR_MAX)
++                        break;
++                if (len > 0)
++                        index++;
+         }
+ 
+-        return _supported;
++        return false;
+ }
+ 
+ static inline bool
+@@ -159,31 +157,34 @@ gdm_pam_extension_advertise_supported_extensions (char               *environmen
+                                                   size_t              block_size,
+                                                   const char * const *supported_extensions)
+ {
+-        size_t _size = 0;
+-        unsigned char _t, _num_chunks;
+-        char *_p;
+-
+-        _p = environment_block;
+-        _p = stpncpy (_p, "GDM_SUPPORTED_PAM_EXTENSIONS", block_size);
+-        *_p = '\0';
+-        _size += strlen (environment_block);
+-
+-        for (_t = 0; supported_extensions[_t] != NULL && _t < UCHAR_MAX; _t++) {
+-                size_t _next_chunk = strlen (supported_extensions[_t]) + strlen (" ");
+-                if (_size + _next_chunk >= block_size)
++        const char *key = "GDM_SUPPORTED_PAM_EXTENSIONS";
++        size_t key_len = strlen (key);
++        size_t offset;
++        size_t index;
++
++        if (block_size < key_len + 2)
++                return;
++
++        memcpy (environment_block, key, key_len);
++        environment_block[key_len] = '=';
++        offset = key_len + 1;
++
++        for (index = 0; supported_extensions[index] != NULL && index < UCHAR_MAX; index++) {
++                size_t ext_len = strlen (supported_extensions[index]);
++                size_t needed = ext_len + (index > 0 ? 1 : 0);
++
++                if (offset + needed + 1 > block_size)
+                         break;
+-                _size += _next_chunk;
++
++                if (index > 0)
++                        environment_block[offset++] = ' ';
++
++                memcpy (environment_block + offset, supported_extensions[index], ext_len);
++                offset += ext_len;
+         }
+-        _num_chunks = _t;
+-
+-        if (_t != 0) {
+-                _p = stpcpy (_p, "=");
+-                for (_t = 0; _t < _num_chunks; _t++) {
+-                        if (_t != 0)
+-                                _p = stpcpy (_p, " ");
+-                        _p = stpcpy (_p, supported_extensions[_t]);
+-                }
+-                *_p = '\0';
++
++        if (index > 0) {
++                environment_block[offset] = '\0';
+                 putenv (environment_block);
+         }
+ }
+-- 
+2.51.0
+
+
+From 78db6be0931c2646fb6076d846924dcfb1350864 Mon Sep 17 00:00:00 2001
+From: Joan Torres Lopez <joantolo@redhat.com>
+Date: Tue, 18 Aug 2026 17:11:50 +0200
+Subject: [PATCH 7/7] pam-extensions: Re-add backwards-compatible macros for API
+ stability
+
+---
+ .../gdm-choice-list-pam-extension.h           | 10 +++++++++
+ .../gdm-custom-json-pam-extension.h           | 10 +++++++++
+ pam-extensions/gdm-pam-extensions-common.h    | 22 +++++++++++++++++++
+ 3 files changed, 42 insertions(+)
+
+diff --git a/pam-extensions/gdm-choice-list-pam-extension.h b/pam-extensions/gdm-choice-list-pam-extension.h
+index 114b9a2..df6fc19 100644
+--- a/pam-extensions/gdm-choice-list-pam-extension.h
++++ b/pam-extensions/gdm-choice-list-pam-extension.h
+@@ -92,3 +92,13 @@ gdm_pam_extension_choice_list_response_free (GdmPamExtensionChoiceListResponse *
+ #ifdef __G_LIB_H__
+ G_DEFINE_AUTOPTR_CLEANUP_FUNC (GdmPamExtensionChoiceListResponse, gdm_pam_extension_choice_list_response_free)
+ #endif
++
++/* Backwards-compatible macros wrapping the new static inline functions */
++#define GDM_PAM_EXTENSION_CHOICE_LIST_REQUEST_INIT(request, title, num_items) \
++        gdm_pam_extension_choice_list_request_init (request, title, num_items)
++#define GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_INIT(response) \
++        gdm_pam_extension_choice_list_response_init (response)
++#define GDM_PAM_EXTENSION_REPLY_TO_CHOICE_LIST_RESPONSE(reply) \
++        gdm_pam_extension_reply_to_choice_list_response (reply)
++#define GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_FREE(response) \
++        gdm_pam_extension_choice_list_response_free (response)
+diff --git a/pam-extensions/gdm-custom-json-pam-extension.h b/pam-extensions/gdm-custom-json-pam-extension.h
+index d9cc7f4..231c955 100644
+--- a/pam-extensions/gdm-custom-json-pam-extension.h
++++ b/pam-extensions/gdm-custom-json-pam-extension.h
+@@ -90,3 +90,13 @@ gdm_pam_extension_custom_json_response_free (GdmPamExtensionJSONProtocol *respon
+ #ifdef __G_LIB_H__
+ G_DEFINE_AUTOPTR_CLEANUP_FUNC (GdmPamExtensionJSONProtocol, gdm_pam_extension_custom_json_response_free)
+ #endif
++
++/* Backwards-compatible macros wrapping the new static inline functions */
++#define GDM_PAM_EXTENSION_CUSTOM_JSON_REQUEST_INIT(request, proto_name, proto_version, json_str) \
++        gdm_pam_extension_custom_json_request_init (request, proto_name, proto_version, json_str)
++#define GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_INIT(response, proto_name, proto_version) \
++        gdm_pam_extension_custom_json_response_init (response, proto_name, proto_version)
++#define GDM_PAM_EXTENSION_REPLY_TO_CUSTOM_JSON_RESPONSE(reply) \
++        gdm_pam_extension_reply_to_custom_json_response (reply)
++#define GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_FREE(response) \
++        gdm_pam_extension_custom_json_response_free (response)
+diff --git a/pam-extensions/gdm-pam-extensions-common.h b/pam-extensions/gdm-pam-extensions-common.h
+index 7904b77..7fac0d8 100644
+--- a/pam-extensions/gdm-pam-extensions-common.h
++++ b/pam-extensions/gdm-pam-extensions-common.h
+@@ -188,3 +188,25 @@ gdm_pam_extension_advertise_supported_extensions (char               *environmen
+                 putenv (environment_block);
+         }
+ }
++
++/* Backwards-compatible macros wrapping the new static inline functions.
++ * Prefer calling the functions directly in new code.
++ */
++#define GDM_PAM_EXTENSION_MESSAGE_FROM_PAM_MESSAGE(query) \
++        gdm_pam_extension_message_from_pam_message (query)
++#define GDM_PAM_EXTENSION_MESSAGE_TO_PAM_REPLY(msg) \
++        gdm_pam_extension_message_to_pam_reply (msg)
++#define GDM_PAM_EXTENSION_MESSAGE_TO_BINARY_PROMPT_MESSAGE(extended_message, binary_message) \
++        gdm_pam_extension_message_to_binary_prompt_message (extended_message, binary_message)
++#define GDM_PAM_EXTENSION_MESSAGE_TRUNCATED(msg) \
++        gdm_pam_extension_message_truncated (msg)
++#define GDM_PAM_EXTENSION_MESSAGE_INVALID_TYPE(msg) \
++        gdm_pam_extension_message_invalid_type (msg)
++#define GDM_PAM_EXTENSION_MESSAGE_MATCH(msg, supported_extensions, name) \
++        gdm_pam_extension_message_match (msg, supported_extensions, name)
++#define GDM_PAM_EXTENSION_LOOK_UP_TYPE(name, extension_type) \
++        gdm_pam_extension_look_up_type (name, extension_type)
++#define GDM_PAM_EXTENSION_SUPPORTED(name) \
++        gdm_pam_extension_supported (name)
++#define GDM_PAM_EXTENSION_ADVERTISE_SUPPORTED_EXTENSIONS(environment_block, supported_extensions) \
++        gdm_pam_extension_advertise_supported_extensions (environment_block, sizeof (environment_block), supported_extensions)
+-- 
+2.51.0
+
