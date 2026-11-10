@@ -11,7 +11,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.1
-Release: 44%{?dist}
+Release: 50%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -77,6 +77,14 @@ Patch160003: 0001-manager-Schedule-deferred-plymouth-quit-on-session-r.patch
 
 Patch170001: 0001-session-record-Rework-wtmp-utmp-btmp-fields.patch
 
+# Passwordless GDM patches
+Patch180001: 0001-pam-extensions-Add-support-for-generic-GDM-CustomJSON.patch
+Patch180002: 0001-data-Add-support-for-unified-authentication.patch
+
+Patch190001: 0001-data-Add-PAM-substack-wrappers-to-prevent-auth-bypas.patch
+
+Patch200001: 0001-gdm-session-settings-keep-a-ref-to-the-user.patch
+
 # Non-upstreamable workarounds
 Patch66610001: 0001-data-reap-gdm-sessions-on-shutdown.patch
 
@@ -111,6 +119,7 @@ BuildRequires: pkgconfig(gobject-introspection-1.0)
 BuildRequires: pkgconfig(gtk+-3.0) >= %{gtk3_version}
 BuildRequires: pkgconfig(gudev-1.0)
 BuildRequires: pkgconfig(iso-codes)
+BuildRequires: pkgconfig(json-glib-1.0)
 BuildRequires: pkgconfig(libcanberra-gtk3)
 BuildRequires: pkgconfig(libselinux)
 BuildRequires: pkgconfig(libsystemd)
@@ -312,7 +321,7 @@ dconf update || :
 %config %{_sysconfdir}/gdm/PreSession/*
 %config %{_sysconfdir}/gdm/PostSession/*
 %config %{_sysconfdir}/pam.d/gdm-autologin
-%config %{_sysconfdir}/pam.d/gdm-password
+%config %{_sysconfdir}/pam.d/gdm-password*
 # not config files
 %{_sysconfdir}/gdm/Xsession
 %{_datadir}/gdm/gdm.schemas
@@ -357,8 +366,9 @@ dconf update || :
 %attr(0600, gdm, gdm) %{_localstatedir}/lib/gdm/.config/pulse/default.pa
 %attr(0711, root, gdm) %dir /run/gdm
 %config %{_sysconfdir}/pam.d/gdm-pin
-%config %{_sysconfdir}/pam.d/gdm-smartcard
-%config %{_sysconfdir}/pam.d/gdm-fingerprint
+%config %{_sysconfdir}/pam.d/gdm-smartcard*
+%config %{_sysconfdir}/pam.d/gdm-switchable*
+%config %{_sysconfdir}/pam.d/gdm-fingerprint*
 %{_sysconfdir}/pam.d/gdm-launch-environment
 %{_udevrulesdir}/61-gdm.rules
 %{_unitdir}/gdm.service
@@ -371,27 +381,53 @@ dconf update || :
 %dir %{_includedir}/gdm
 %{_includedir}/gdm/*.h
 %exclude %{_includedir}/gdm/gdm-pam-extensions.h
+%exclude %{_includedir}/gdm/gdm-choice-list-pam-extension.h
+%exclude %{_includedir}/gdm/gdm-custom-json-pam-extension.h
+%exclude %{_includedir}/gdm/gdm-pam-extensions-common.h
 %dir %{_datadir}/gir-1.0
 %{_datadir}/gir-1.0/Gdm-1.0.gir
 %{_libdir}/pkgconfig/gdm.pc
 
 %files pam-extensions-devel
 %{_includedir}/gdm/gdm-pam-extensions.h
+%{_includedir}/gdm/gdm-choice-list-pam-extension.h
+%{_includedir}/gdm/gdm-custom-json-pam-extension.h
+%{_includedir}/gdm/gdm-pam-extensions-common.h
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
-* Mon Jun 1 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-44
+* Tue Aug 18 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-50
+- Update unified authentication patch to drop passkey/web auth settings
+  Resolves: https://redhat.atlassian.net/browse/RHEL-236551
+
+* Fri Aug 14 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-49
+- Fix crash in session-settings related with ActUser
+  Resolves: https://redhat.atlassian.net/browse/RHEL-240874
+
+* Fri Jul 10 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-48
+- Fix auth bypass in authselect pam substacks
+  Resolves: https://redhat.atlassian.net/browse/RHEL-194090
+
+* Mon Jun 1 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-47
 - Create display in "legacy-xorg" mode checking displays in tty
-  Resolves: https://redhat.atlassian.net/browse/RHEL-180820
+  Resolves: https://redhat.atlassian.net/browse/RHEL-180822
 
-* Fri May 29 2026 Tomas Pelka <tpelka@redhat.com> - 40.1-43.1
-- retrigger new build in correct target
-  Resolves: https://redhat.atlassian.net/browse/RHEL-178706
+* Thu May 28 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-46
+- Fix last change when setting xsession program
+  Related: https://redhat.atlassian.net/browse/RHEL-178686
 
-* Mon May 25 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-43
+* Mon May 25 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-45
 - Update how GDM handles Registering session/display
   to properly terminate plymouth
-  Resolves: https://redhat.atlassian.net/browse/RHEL-178706
+  Resolves: https://redhat.atlassian.net/browse/RHEL-178686
+
+* Wed Apr 22 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-44
+- Add pam-extension helpers in pam-extensions-devel
+  Related: https://redhat.atlassian.net/browse/RHEL-139178
+
+* Tue Apr 14 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-43
+- Backport passwordless feature to RHEL 9
+  Resolves: https://redhat.atlassian.net/browse/RHEL-139178
 
 * Fri Mar 6 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-42
 - Terminate conflicting sesions started outside of GDM 

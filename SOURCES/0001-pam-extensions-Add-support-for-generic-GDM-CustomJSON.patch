@@ -1,0 +1,1441 @@
+From 7b55b08f184e99cdd16727dc8e87ce55e2ed1ee1 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Tue, 30 May 2023 09:31:32 -0400
+Subject: [PATCH 1/7] pam-extensions: Separate ChoiceList extension to its own
+ header
+
+We're going to be adding another extension or two in the near future,
+so having everything in one header file isn't great for structure's
+sake.
+
+This commit moves the common code to a common header, the extension
+to its own header, and makes gdm-pam-extensions.h just include
+the other headers.
+---
+ .../gdm-choice-list-pam-extension.h           |  70 ++++++++
+ pam-extensions/gdm-pam-extensions-common.h    | 133 +++++++++++++++
+ pam-extensions/gdm-pam-extensions.h           | 155 +-----------------
+ pam-extensions/meson.build                    |   6 +-
+ 4 files changed, 209 insertions(+), 155 deletions(-)
+ create mode 100644 pam-extensions/gdm-choice-list-pam-extension.h
+ create mode 100644 pam-extensions/gdm-pam-extensions-common.h
+
+diff --git a/pam-extensions/gdm-choice-list-pam-extension.h b/pam-extensions/gdm-choice-list-pam-extension.h
+new file mode 100644
+index 000000000..0e75ccc93
+--- /dev/null
++++ b/pam-extensions/gdm-choice-list-pam-extension.h
+@@ -0,0 +1,70 @@
++/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 8 -*-
++ *
++ * Copyright (C) 2017 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
++ *
++ */
++#ifndef GDM_CHOICE_LIST_PAM_EXTENSION_H
++#define GDM_CHOICE_LIST_PAM_EXTENSION_H
++
++#include "gdm-pam-extensions-common.h"
++
++typedef struct {
++        const char *key;
++        const char *text;
++} GdmChoiceListItems;
++
++typedef struct {
++        size_t number_of_items;
++        GdmChoiceListItems items[];
++} GdmChoiceList;
++
++typedef struct {
++        GdmPamExtensionMessage header;
++
++        char *prompt_message;
++        GdmChoiceList list;
++} GdmPamExtensionChoiceListRequest;
++
++typedef struct {
++        GdmPamExtensionMessage header;
++
++        char *key;
++} GdmPamExtensionChoiceListResponse;
++
++#define GDM_PAM_EXTENSION_CHOICE_LIST "org.gnome.DisplayManager.UserVerifier.ChoiceList"
++
++#define GDM_CHOICE_LIST_SIZE(num_items) (offsetof(GdmChoiceList, items) + (num_items) * sizeof (GdmChoiceListItems))
++#define GDM_PAM_EXTENSION_CHOICE_LIST_REQUEST_SIZE(num_items) (offsetof(GdmPamExtensionChoiceListRequest, list) + GDM_CHOICE_LIST_SIZE((num_items)))
++#define GDM_PAM_EXTENSION_CHOICE_LIST_REQUEST_INIT(request, title, num_items) \
++{ \
++        int _n = num_items; \
++        GDM_PAM_EXTENSION_LOOK_UP_TYPE (GDM_PAM_EXTENSION_CHOICE_LIST, &request->header.type); \
++        request->header.length = htobe32 (GDM_PAM_EXTENSION_CHOICE_LIST_REQUEST_SIZE(_n)); \
++        request->prompt_message = title; \
++        request->list.number_of_items = _n; \
++}
++
++#define GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_SIZE sizeof (GdmPamExtensionChoiceListResponse)
++#define GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_INIT(response) \
++{ \
++        GDM_PAM_EXTENSION_LOOK_UP_TYPE (GDM_PAM_EXTENSION_CHOICE_LIST, &response->header.type); \
++        response->header.length = htobe32 (GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_SIZE); \
++        response->key = NULL; \
++}
++#define GDM_PAM_EXTENSION_REPLY_TO_CHOICE_LIST_RESPONSE(reply) ((GdmPamExtensionChoiceListResponse *) (void *) reply->resp)
++
++#endif
+diff --git a/pam-extensions/gdm-pam-extensions-common.h b/pam-extensions/gdm-pam-extensions-common.h
+new file mode 100644
+index 000000000..5201823a4
+--- /dev/null
++++ b/pam-extensions/gdm-pam-extensions-common.h
+@@ -0,0 +1,133 @@
++/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 8 -*-
++ *
++ * Copyright (C) 2017 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
++ *
++ */
++#ifndef GDM_PAM_EXTENSIONS_COMMON_H
++#define GDM_PAM_EXTENSIONS_COMMON_H
++
++#include <alloca.h>
++#include <endian.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <limits.h>
++
++#include <security/pam_appl.h>
++
++typedef struct {
++        uint32_t length;
++
++        unsigned char type;
++        unsigned char data[];
++} GdmPamExtensionMessage;
++
++#define GDM_PAM_EXTENSION_MESSAGE_FROM_PAM_MESSAGE(query) (GdmPamExtensionMessage *) (void *) query->msg
++#define GDM_PAM_EXTENSION_MESSAGE_TO_PAM_REPLY(msg) (char *) (void *) msg
++#define GDM_PAM_EXTENSION_MESSAGE_TO_BINARY_PROMPT_MESSAGE(extended_message, binary_message) \
++{ \
++        (binary_message)->msg_style = PAM_BINARY_PROMPT; \
++        (binary_message)->msg = (void *) extended_message; \
++}
++#define GDM_PAM_EXTENSION_MESSAGE_TRUNCATED(msg) be32toh(msg->length) < sizeof (GdmPamExtensionMessage)
++#define GDM_PAM_EXTENSION_MESSAGE_INVALID_TYPE(msg) \
++({ \
++        bool _invalid = true; \
++        int _n = -1; \
++        const char *_supported_extensions; \
++        _supported_extensions = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS"); \
++        if (_supported_extensions != NULL) { \
++                const char *_p = _supported_extensions; \
++                while (*_p != '\0' && _n < UCHAR_MAX) { \
++                        size_t _length; \
++                        _length = strcspn (_p, " "); \
++                        if (_length > 0) \
++                                _n++; \
++                        _p += _length; \
++                        _length = strspn (_p, " "); \
++                        _p += _length; \
++                } \
++                if (_n >= msg->type) \
++                        _invalid = false; \
++        } \
++        _invalid; \
++})
++#define GDM_PAM_EXTENSION_MESSAGE_MATCH(msg, supported_extensions, name) (strcmp (supported_extensions[msg->type], name) == 0)
++
++/* environment block should be a statically allocated chunk of memory.  This is important because
++ * putenv() will leak otherwise (and setenv isn't thread safe)
++ */
++#define GDM_PAM_EXTENSION_ADVERTISE_SUPPORTED_EXTENSIONS(environment_block, supported_extensions) \
++{ \
++        size_t _size = 0; \
++        unsigned char _t, _num_chunks; \
++        char *_p; \
++        _p = environment_block; \
++        _p = stpncpy (_p, "GDM_SUPPORTED_PAM_EXTENSIONS", sizeof(environment_block)); \
++        *_p = '\0'; \
++        _size += strlen (_p); \
++        for (_t = 0; supported_extensions[_t] != NULL && _t < UCHAR_MAX; _t++) {\
++                size_t _next_chunk = strlen (supported_extensions[_t]) + strlen (" "); \
++                if (_size + _next_chunk >= sizeof (environment_block)) \
++                        break; \
++                _size += _next_chunk; \
++        }\
++        _num_chunks = _t; \
++        if (_t != 0) { \
++                _p = stpcpy (_p, "="); \
++                for (_t = 0; _t < _num_chunks; _t++) { \
++                        if (_t != 0) \
++                                _p = stpcpy (_p, " "); \
++                        _p = stpcpy (_p, supported_extensions[_t]); \
++                } \
++                *_p = '\0'; \
++                putenv (environment_block); \
++        } \
++}
++
++#define GDM_PAM_EXTENSION_LOOK_UP_TYPE(name, extension_type) \
++({ \
++        bool _supported = false; \
++        unsigned char _t = 0; \
++        const char *_supported_extensions; \
++        _supported_extensions = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS"); \
++        if (_supported_extensions != NULL) { \
++                const char *_p = _supported_extensions; \
++                while (*_p != '\0') { \
++                        size_t _length; \
++                        _length = strcspn (_p, " "); \
++                        if (strncmp (_p, name, _length) == 0) { \
++                                _supported = true; \
++                                break; \
++                        } \
++                        _p += _length; \
++                        _length = strspn (_p, " "); \
++                        _p += _length; \
++                        if (_t >= UCHAR_MAX) { \
++                                break; \
++                        } \
++                        _t++; \
++                } \
++                if (_supported && extension_type != NULL) \
++                        *extension_type = _t; \
++        } \
++        _supported; \
++})
++
++#define GDM_PAM_EXTENSION_SUPPORTED(name) GDM_PAM_EXTENSION_LOOK_UP_TYPE(name, (unsigned char *) NULL)
++
++#endif
+diff --git a/pam-extensions/gdm-pam-extensions.h b/pam-extensions/gdm-pam-extensions.h
+index cecb74225..cdf34f382 100644
+--- a/pam-extensions/gdm-pam-extensions.h
++++ b/pam-extensions/gdm-pam-extensions.h
+@@ -20,159 +20,6 @@
+ #ifndef GDM_PAM_EXTENSIONS_H
+ #define GDM_PAM_EXTENSIONS_H
+ 
+-#include <alloca.h>
+-#include <endian.h>
+-#include <stdbool.h>
+-#include <stddef.h>
+-#include <stdint.h>
+-#include <limits.h>
+-
+-#include <security/pam_appl.h>
+-
+-typedef struct {
+-        uint32_t length;
+-
+-        unsigned char type;
+-        unsigned char data[];
+-} GdmPamExtensionMessage;
+-
+-#define GDM_PAM_EXTENSION_MESSAGE_FROM_PAM_MESSAGE(query) (GdmPamExtensionMessage *) (void *) query->msg
+-#define GDM_PAM_EXTENSION_MESSAGE_TO_PAM_REPLY(msg) (char *) (void *) msg
+-#define GDM_PAM_EXTENSION_MESSAGE_TO_BINARY_PROMPT_MESSAGE(extended_message, binary_message) \
+-{ \
+-        (binary_message)->msg_style = PAM_BINARY_PROMPT; \
+-        (binary_message)->msg = (void *) extended_message; \
+-}
+-#define GDM_PAM_EXTENSION_MESSAGE_TRUNCATED(msg) be32toh(msg->length) < sizeof (GdmPamExtensionMessage)
+-#define GDM_PAM_EXTENSION_MESSAGE_INVALID_TYPE(msg) \
+-({ \
+-        bool _invalid = true; \
+-        int _n = -1; \
+-        const char *_supported_extensions; \
+-        _supported_extensions = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS"); \
+-        if (_supported_extensions != NULL) { \
+-                const char *_p = _supported_extensions; \
+-                while (*_p != '\0' && _n < UCHAR_MAX) { \
+-                        size_t _length; \
+-                        _length = strcspn (_p, " "); \
+-                        if (_length > 0) \
+-                                _n++; \
+-                        _p += _length; \
+-                        _length = strspn (_p, " "); \
+-                        _p += _length; \
+-                } \
+-                if (_n >= msg->type) \
+-                        _invalid = false; \
+-        } \
+-        _invalid; \
+-})
+-#define GDM_PAM_EXTENSION_MESSAGE_MATCH(msg, supported_extensions, name) (strcmp (supported_extensions[msg->type], name) == 0)
+-
+-/* environment block should be a statically allocated chunk of memory.  This is important because
+- * putenv() will leak otherwise (and setenv isn't thread safe)
+- */
+-#define GDM_PAM_EXTENSION_ADVERTISE_SUPPORTED_EXTENSIONS(environment_block, supported_extensions) \
+-{ \
+-        size_t _size = 0; \
+-        unsigned char _t, _num_chunks; \
+-        char *_p; \
+-        _p = environment_block; \
+-        _p = stpncpy (_p, "GDM_SUPPORTED_PAM_EXTENSIONS", sizeof(environment_block)); \
+-        *_p = '\0'; \
+-        _size += strlen (_p); \
+-        for (_t = 0; supported_extensions[_t] != NULL && _t < UCHAR_MAX; _t++) {\
+-                size_t _next_chunk = strlen (supported_extensions[_t]) + strlen (" "); \
+-                if (_size + _next_chunk >= sizeof (environment_block)) \
+-                        break; \
+-                _size += _next_chunk; \
+-        }\
+-        _num_chunks = _t; \
+-        if (_t != 0) { \
+-                _p = stpcpy (_p, "="); \
+-                for (_t = 0; _t < _num_chunks; _t++) { \
+-                        if (_t != 0) \
+-                                _p = stpcpy (_p, " "); \
+-                        _p = stpcpy (_p, supported_extensions[_t]); \
+-                } \
+-                *_p = '\0'; \
+-                putenv (environment_block); \
+-        } \
+-}
+-
+-#define GDM_PAM_EXTENSION_LOOK_UP_TYPE(name, extension_type) \
+-({ \
+-        bool _supported = false; \
+-        unsigned char _t = 0; \
+-        const char *_supported_extensions; \
+-        _supported_extensions = getenv ("GDM_SUPPORTED_PAM_EXTENSIONS"); \
+-        if (_supported_extensions != NULL) { \
+-                const char *_p = _supported_extensions; \
+-                while (*_p != '\0') { \
+-                        size_t _length; \
+-                        _length = strcspn (_p, " "); \
+-                        if (strncmp (_p, name, _length) == 0) { \
+-                                _supported = true; \
+-                                break; \
+-                        } \
+-                        _p += _length; \
+-                        _length = strspn (_p, " "); \
+-                        _p += _length; \
+-                        if (_t >= UCHAR_MAX) { \
+-                                break; \
+-                        } \
+-                        _t++; \
+-                } \
+-                if (_supported && extension_type != NULL) \
+-                        *extension_type = _t; \
+-        } \
+-        _supported; \
+-})
+-
+-#define GDM_PAM_EXTENSION_SUPPORTED(name) GDM_PAM_EXTENSION_LOOK_UP_TYPE(name, (unsigned char *) NULL)
+-
+-typedef struct {
+-        const char *key;
+-        const char *text;
+-} GdmChoiceListItems;
+-
+-typedef struct {
+-        size_t number_of_items;
+-        GdmChoiceListItems items[];
+-} GdmChoiceList;
+-
+-typedef struct {
+-        GdmPamExtensionMessage header;
+-
+-        char *prompt_message;
+-        GdmChoiceList list;
+-} GdmPamExtensionChoiceListRequest;
+-
+-typedef struct {
+-        GdmPamExtensionMessage header;
+-
+-        char *key;
+-} GdmPamExtensionChoiceListResponse;
+-
+-#define GDM_PAM_EXTENSION_CHOICE_LIST "org.gnome.DisplayManager.UserVerifier.ChoiceList"
+-
+-#define GDM_CHOICE_LIST_SIZE(num_items) (offsetof(GdmChoiceList, items) + (num_items) * sizeof (GdmChoiceListItems))
+-#define GDM_PAM_EXTENSION_CHOICE_LIST_REQUEST_SIZE(num_items) (offsetof(GdmPamExtensionChoiceListRequest, list) + GDM_CHOICE_LIST_SIZE((num_items)))
+-#define GDM_PAM_EXTENSION_CHOICE_LIST_REQUEST_INIT(request, title, num_items) \
+-{ \
+-        int _n = num_items; \
+-        GDM_PAM_EXTENSION_LOOK_UP_TYPE (GDM_PAM_EXTENSION_CHOICE_LIST, &request->header.type); \
+-        request->header.length = htobe32 (GDM_PAM_EXTENSION_CHOICE_LIST_REQUEST_SIZE(_n)); \
+-        request->prompt_message = title; \
+-        request->list.number_of_items = _n; \
+-}
+-
+-#define GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_SIZE sizeof (GdmPamExtensionChoiceListResponse)
+-#define GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_INIT(response) \
+-{ \
+-        GDM_PAM_EXTENSION_LOOK_UP_TYPE (GDM_PAM_EXTENSION_CHOICE_LIST, &response->header.type); \
+-        response->header.length = htobe32 (GDM_PAM_EXTENSION_CHOICE_LIST_RESPONSE_SIZE); \
+-        response->key = NULL; \
+-}
+-#define GDM_PAM_EXTENSION_REPLY_TO_CHOICE_LIST_RESPONSE(reply) ((GdmPamExtensionChoiceListResponse *) (void *) reply->resp)
++#include "gdm-choice-list-pam-extension.h"
+ 
+ #endif
+diff --git a/pam-extensions/meson.build b/pam-extensions/meson.build
+index 4e7bc2e17..02f4ff601 100644
+--- a/pam-extensions/meson.build
++++ b/pam-extensions/meson.build
+@@ -7,8 +7,12 @@ if pam_extensions_supported
+     subdirs: meson.project_name(),
+   )
+ 
++  header_files = files('gdm-pam-extensions.h',
++                       'gdm-pam-extensions-common.h',
++                       'gdm-choice-list-pam-extension.h')
++
+   pam_extensions_inc = include_directories('.')
+-  install_headers('gdm-pam-extensions.h',
++  install_headers(header_files,
+     subdir: meson.project_name()
+   )
+ endif
+-- 
+2.47.3
+
+
+From 005c3a3ae509da1fea1d2875852a06f7734f783a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marco=20Trevisan=20=28Trevi=C3=B1o=29?= <mail@3v1n0.net>
+Date: Mon, 23 Oct 2023 09:34:56 +0200
+Subject: [PATCH 2/7] gdm-client: Add user verifier PAM extensions getter
+
+We have a setter to enable the user verifier PAM extensions, but it's
+not possible to get back this parameter.
+
+So add a getter for it. We're still returning the value that the library
+user defined, more than the extensions that are actually enabled as that
+may lead to a racy result, given that it depends on interaction with
+GDM session.
+---
+ libgdm/gdm-client.c | 15 +++++++++++++++
+ libgdm/gdm-client.h |  1 +
+ 2 files changed, 16 insertions(+)
+
+diff --git a/libgdm/gdm-client.c b/libgdm/gdm-client.c
+index fb58f1a4c..abbbda316 100644
+--- a/libgdm/gdm-client.c
++++ b/libgdm/gdm-client.c
+@@ -1422,3 +1422,18 @@ gdm_client_set_enabled_extensions (GdmClient          *client,
+ {
+         client->enabled_extensions = g_strdupv ((char **) extensions);
+ }
++
++/**
++ * gdm_client_get_enabled_extensions:
++ * @client: a #GdmClient
++ *
++ * Gets GDM's enabled pam extensions.  Currently, only
++ * org.gnome.DisplayManager.UserVerifier.ChoiceList is supported.
++ *
++ * Returns: (array zero-terminated=1) (element-type utf8) (transfer: full): a list of extensions
++ */
++GStrv
++gdm_client_get_enabled_extensions (GdmClient *client)
++{
++        return g_strdupv (client->enabled_extensions);
++}
+diff --git a/libgdm/gdm-client.h b/libgdm/gdm-client.h
+index f73b5556a..4993cb86d 100644
+--- a/libgdm/gdm-client.h
++++ b/libgdm/gdm-client.h
+@@ -41,6 +41,7 @@ GQuark             gdm_client_error_quark              (void);
+ GdmClient         *gdm_client_new                      (void);
+ void               gdm_client_set_enabled_extensions   (GdmClient *client,
+                                                         const char * const * extensions);
++GStrv              gdm_client_get_enabled_extensions   (GdmClient *client);
+ 
+ void               gdm_client_open_reauthentication_channel (GdmClient     *client,
+                                                              const char           *username,
+-- 
+2.47.3
+
+
+From 5953efd31d1be06ac7916166e0940a753107196f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marco=20Trevisan=20=28Trevi=C3=B1o=29?= <mail@3v1n0.net>
+Date: Tue, 28 Nov 2023 16:04:23 +0100
+Subject: [PATCH 3/7] gdm-client: Use qdata to get user verifier extensions
+
+This object data is used multiple times, and depending on strings is
+more error prone other than less efficient. So use a GQuark for this.
+---
+ libgdm/gdm-client.c | 51 ++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 36 insertions(+), 15 deletions(-)
+
+diff --git a/libgdm/gdm-client.c b/libgdm/gdm-client.c
+index abbbda316..32d6c80f7 100644
+--- a/libgdm/gdm-client.c
++++ b/libgdm/gdm-client.c
+@@ -68,6 +68,20 @@ gdm_client_error_quark (void)
+         return error_quark;
+ }
+ 
++static GQuark
++gdm_client_user_verifier_extensions_quark (void)
++{
++        static gpointer quark_initialized = 0;
++        static GQuark quark = 0;
++
++        if (g_once_init_enter (&quark_initialized)) {
++                quark = g_quark_from_static_string ("gdm-client-user-verifier-extensions");
++                g_once_init_leave (&quark_initialized, GINT_TO_POINTER (TRUE));
++        }
++
++        return quark;
++}
++
+ static GDBusConnection *
+ gdm_client_get_open_connection (GdmClient *client)
+ {
+@@ -177,7 +191,8 @@ maybe_complete_user_verifier_proxy_operation (GdmClient          *client,
+         GHashTableIter iter;
+         gpointer key, value;
+ 
+-        user_verifier_extensions = g_object_get_data (G_OBJECT (data->user_verifier), "gdm-client-user-verifier-extensions");
++        user_verifier_extensions = g_object_get_qdata (G_OBJECT (data->user_verifier),
++                                                       gdm_client_user_verifier_extensions_quark ());
+         if (user_verifier_extensions != NULL) {
+                 g_hash_table_iter_init (&iter, user_verifier_extensions);
+                 while (g_hash_table_iter_next (&iter, &key, &value)) {
+@@ -201,7 +216,8 @@ on_user_verifier_choice_list_proxy_created (GObject            *source,
+ 
+         client = GDM_CLIENT (g_async_result_get_source_object (G_ASYNC_RESULT (data->task)));
+ 
+-        user_verifier_extensions = g_object_get_data (G_OBJECT (data->user_verifier), "gdm-client-user-verifier-extensions");
++        user_verifier_extensions = g_object_get_qdata (G_OBJECT (data->user_verifier),
++                                                       gdm_client_user_verifier_extensions_quark ());
+         choice_list = gdm_user_verifier_choice_list_proxy_new_finish (result, &error);
+ 
+         if (choice_list == NULL) {
+@@ -228,7 +244,8 @@ on_user_verifier_extensions_enabled (GdmUserVerifier    *user_verifier,
+ 
+         client = GDM_CLIENT (g_async_result_get_source_object (G_ASYNC_RESULT (data->task)));
+         cancellable = g_task_get_cancellable (data->task);
+-        user_verifier_extensions = g_object_get_data (G_OBJECT (user_verifier), "gdm-client-user-verifier-extensions");
++        user_verifier_extensions = g_object_get_qdata (G_OBJECT (user_verifier),
++                                                       gdm_client_user_verifier_extensions_quark ());
+ 
+         gdm_user_verifier_call_enable_extensions_finish (user_verifier, result, &error);
+ 
+@@ -313,10 +330,10 @@ on_user_verifier_proxy_created (GObject            *source,
+                                                           NULL,
+                                                           (GDestroyNotify)
+                                                           free_interface_skeleton);
+-        g_object_set_data_full (G_OBJECT (user_verifier),
+-                                "gdm-client-user-verifier-extensions",
+-                                user_verifier_extensions,
+-                                (GDestroyNotify) g_hash_table_unref);
++        g_object_set_qdata_full (G_OBJECT (user_verifier),
++                                 gdm_client_user_verifier_extensions_quark (),
++                                 user_verifier_extensions,
++                                 (GDestroyNotify) g_hash_table_unref);
+         cancellable = g_task_get_cancellable (task);
+         gdm_user_verifier_call_enable_extensions (user_verifier,
+                                                   (const char * const *)
+@@ -690,10 +707,10 @@ gdm_client_get_user_verifier_sync (GdmClient     *client,
+                                                                           NULL,
+                                                                           (GDestroyNotify)
+                                                                           free_interface_skeleton);
+-                        g_object_set_data_full (G_OBJECT (client->user_verifier),
+-                                                "gdm-client-user-verifier-extensions",
+-                                                user_verifier_extensions,
+-                                                (GDestroyNotify) g_hash_table_unref);
++                        g_object_set_qdata_full (G_OBJECT (client->user_verifier),
++                                                 gdm_client_user_verifier_extensions_quark (),
++                                                 user_verifier_extensions,
++                                                 (GDestroyNotify) g_hash_table_unref);
+ 
+                         res = gdm_user_verifier_call_enable_extensions_sync (client->user_verifier,
+                                                                             (const char * const *)
+@@ -836,11 +853,15 @@ gdm_client_get_user_verifier_choice_list (GdmClient *client)
+ {
+         GHashTable *user_verifier_extensions = NULL;
+ 
+-        if (client->user_verifier_for_reauth != NULL)
+-                user_verifier_extensions = g_object_get_data (G_OBJECT (client->user_verifier_for_reauth), "gdm-client-user-verifier-extensions");
++        if (client->user_verifier_for_reauth != NULL) {
++                user_verifier_extensions = g_object_get_qdata (G_OBJECT (client->user_verifier_for_reauth),
++                                                               gdm_client_user_verifier_extensions_quark ());
++        }
+ 
+-        if (user_verifier_extensions == NULL && client->user_verifier != NULL)
+-                user_verifier_extensions = g_object_get_data (G_OBJECT (client->user_verifier), "gdm-client-user-verifier-extensions");
++        if (user_verifier_extensions == NULL && client->user_verifier != NULL) {
++                user_verifier_extensions = g_object_get_qdata (G_OBJECT (client->user_verifier),
++                                                               gdm_client_user_verifier_extensions_quark ());
++        }
+ 
+         if (user_verifier_extensions == NULL)
+                 return NULL;
+-- 
+2.47.3
+
+
+From eaad7cfe7fb219d87d83422e339ff5ae3c5e69f6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marco=20Trevisan=20=28Trevi=C3=B1o=29?= <mail@3v1n0.net>
+Date: Thu, 23 Nov 2023 00:55:19 +0100
+Subject: [PATCH 4/7] gdm-pam-extensions-common: Include string header
+
+We do various string operations in the header, so include it
+implicitly.
+---
+ pam-extensions/gdm-pam-extensions-common.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/pam-extensions/gdm-pam-extensions-common.h b/pam-extensions/gdm-pam-extensions-common.h
+index 5201823a4..16bee5cab 100644
+--- a/pam-extensions/gdm-pam-extensions-common.h
++++ b/pam-extensions/gdm-pam-extensions-common.h
+@@ -25,6 +25,7 @@
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
++#include <string.h>
+ #include <limits.h>
+ 
+ #include <security/pam_appl.h>
+-- 
+2.47.3
+
+
+From b904090c85e6372dcb74551120668b42a3caed73 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marco=20Trevisan=20=28Trevi=C3=B1o=29?= <mail@3v1n0.net>
+Date: Mon, 23 Oct 2023 13:42:06 +0200
+Subject: [PATCH 5/7] Add support for generic GDM CustomJSON binary protocol
+
+GDM allows passing data through PAM binary conversations, however it
+only supports an extension protocol for choice list.
+
+Due to the GDM architecture, creating a new custom protocol is quite
+verbose and it implies changing multiple layers, at the same time it is
+impossible for modules and GNOME Shell GDM/login extensions to easily
+define specific protocols to perform custom actions, and they currently
+need to rely on DBus or other ways to communicate without an easy way to
+setup a secure communication channel.
+
+At the same time, extending a binary protocol is hard, once one has
+been defined.
+
+To make this easier to manage both by modules and by gdm clients, add
+a simple JSON-based custom protocol that it's easy to extend and
+that moves the protocol definition at higher level than gdm.
+
+This moves the control of custom JSON protocols out from GDM, leaving
+to the modules and to gdm clients (the shell) the control over them.
+
+GDM is still in charge of doing some validation check of the JSON
+provided by the two parties, but it won't be in charge of any further
+protocol operation.
+---
+ daemon/gdm-session-worker.c                   |  68 ++++++++
+ daemon/gdm-session.c                          | 150 ++++++++++++++++++
+ daemon/gdm-session.h                          |   5 +
+ daemon/gdm-session.xml                        |  24 +++
+ daemon/meson.build                            |   1 +
+ libgdm/gdm-client.c                           | 102 +++++++++++-
+ libgdm/gdm-client.h                           |   2 +
+ meson.build                                   |  13 +-
+ .../gdm-custom-json-pam-extension.h           |  61 +++++++
+ pam-extensions/gdm-pam-extensions.h           |   2 +
+ 10 files changed, 420 insertions(+), 8 deletions(-)
+ create mode 100644 pam-extensions/gdm-custom-json-pam-extension.h
+
+diff --git a/daemon/gdm-session-worker.c b/daemon/gdm-session-worker.c
+index 3ad94e2ab..e25f0647b 100644
+--- a/daemon/gdm-session-worker.c
++++ b/daemon/gdm-session-worker.c
+@@ -47,6 +47,8 @@
+ #include <glib-object.h>
+ #include <gio/gio.h>
+ 
++#include <json-glib/json-glib.h>
++
+ #include <X11/Xauth.h>
+ 
+ #include <systemd/sd-daemon.h>
+@@ -178,6 +180,7 @@ static char gdm_pam_extension_environment_block[_POSIX_ARG_MAX];
+ static const char * const
+ gdm_supported_pam_extensions[] = {
+         GDM_PAM_EXTENSION_CHOICE_LIST,
++        GDM_PAM_EXTENSION_CUSTOM_JSON,
+         NULL
+ };
+ #endif
+@@ -587,6 +590,55 @@ gdm_session_worker_process_choice_list_request (GdmSessionWorker
+         return gdm_session_worker_ask_list_of_choices (worker, request->prompt_message, &request->list, &response->key);
+ }
+ 
++static gboolean
++gdm_session_worker_process_custom_json_protocol (GdmSessionWorker            *worker,
++                                                 GdmPamExtensionJSONProtocol *request,
++                                                 GdmPamExtensionJSONProtocol *response)
++{
++        g_autoptr(GError) error = NULL;
++        g_autoptr(JsonParser) parser = NULL;
++        g_autofree char *json_reply = NULL;
++
++        g_debug ("GdmSessionWorker: sending custom JSON protocol request: %s v%d",
++                 request->protocol_name, request->version);
++        g_debug ("GdmSessionWorker: (and waiting for reply)");
++
++        if (!request->json) {
++                g_warning ("GdmSessionWorker: custom JSON request is not valid");
++                return FALSE;
++        }
++
++        parser = json_parser_new_immutable ();
++        if (!json_parser_load_from_data (parser, request->json, -1, &error)) {
++                g_warning ("GdmSessionWorker: custom JSON request is not valid JSON: %s",
++                           error->message);
++                return FALSE;
++        }
++
++        if (!gdm_dbus_worker_manager_call_custom_json_request_sync (worker->priv->manager,
++                                                                    worker->priv->service,
++                                                                    request->protocol_name,
++                                                                    request->version,
++                                                                    request->json,
++                                                                    &response->json,
++                                                                    NULL,
++                                                                    &error)) {
++                g_warning ("GdmSessionWorker: custom JSON request failed: %s",
++                           error->message);
++                return FALSE;
++        }
++
++        if (!response->json) {
++                g_warning ("GdmSessionWorker: custom JSON request returned invalid data");
++                return FALSE;
++        }
++
++        /* No need to validate JSON reply again since that's what we got from
++         * the client and validation happens at daemon level.
++         */
++        return TRUE;
++}
++
+ static gboolean
+ gdm_session_worker_process_extended_pam_message (GdmSessionWorker          *worker,
+                                                  const struct pam_message  *query,
+@@ -624,6 +676,22 @@ gdm_session_worker_process_extended_pam_message (GdmSessionWorker          *work
+ 
+                 *response = GDM_PAM_EXTENSION_MESSAGE_TO_PAM_REPLY (list_response);
+                 return TRUE;
++        } else if (GDM_PAM_EXTENSION_MESSAGE_MATCH (extended_message, worker->priv->extensions, GDM_PAM_EXTENSION_CUSTOM_JSON)) {
++                GdmPamExtensionJSONProtocol *json_request = (GdmPamExtensionJSONProtocol *) extended_message;
++                g_autofree GdmPamExtensionJSONProtocol *json_response = malloc (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE);
++
++                g_debug ("GdmSessionWorker: received extended pam message '%s'", GDM_PAM_EXTENSION_CUSTOM_JSON);
++
++                GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_INIT (json_response,
++                                                              json_request->protocol_name,
++                                                              json_request->version);
++
++                if (!gdm_session_worker_process_custom_json_protocol (worker, json_request, json_response)) {
++                        return FALSE;
++                }
++
++                *response = GDM_PAM_EXTENSION_MESSAGE_TO_PAM_REPLY (g_steal_pointer (&json_response));
++                return TRUE;
+         } else {
+                 g_debug ("GdmSessionWorker: received extended pam message of unknown type %u", (unsigned int) extended_message->type);
+                 return FALSE;
+diff --git a/daemon/gdm-session.c b/daemon/gdm-session.c
+index 12ce72066..904143677 100644
+--- a/daemon/gdm-session.c
++++ b/daemon/gdm-session.c
+@@ -43,6 +43,8 @@
+ #include <glib-object.h>
+ #include <gio/gio.h>
+ 
++#include <json-glib/json-glib.h>
++
+ #include "gdm-session.h"
+ #include "gdm-session-glue.h"
+ #include "gdm-dbus-util.h"
+@@ -774,6 +776,49 @@ gdm_session_handle_choice_list_query (GdmDBusWorkerManager  *worker_manager_inte
+         return TRUE;
+ }
+ 
++static gboolean
++gdm_session_handle_custom_json_request (GdmDBusWorkerManager  *worker_manager_interface,
++                                        GDBusMethodInvocation *invocation,
++                                        const char            *service_name,
++                                        const char            *protocol,
++                                        unsigned int           version,
++                                        const char            *request,
++                                        GdmSession            *self)
++{
++        GdmSessionConversation *conversation;
++        GdmDBusUserVerifierCustomJSON *custom_json_interface = NULL;
++
++        g_debug ("GdmSession: custom JSON request for service '%s'", service_name);
++
++        if (self->user_verifier_extensions != NULL) {
++                custom_json_interface =
++                        g_hash_table_lookup (self->user_verifier_extensions,
++                                             gdm_dbus_user_verifier_custom_json_interface_info ()->name);
++        }
++
++        if (custom_json_interface == NULL) {
++                g_dbus_method_invocation_return_error_literal (invocation, G_DBUS_ERROR,
++                                                               G_DBUS_ERROR_NOT_SUPPORTED,
++                                                               "custom JSON interface not supported by client");
++                return TRUE;
++        }
++
++        conversation = find_conversation_by_name (self, service_name);
++        if (conversation != NULL) {
++                set_pending_query (conversation, invocation);
++
++                g_debug ("GdmSession: emitting custom JSON request '%s' v%u",
++                         protocol, version);
++                gdm_dbus_user_verifier_custom_json_emit_request (custom_json_interface,
++                                                                 service_name,
++                                                                 protocol,
++                                                                 version,
++                                                                 request);
++        }
++
++        return TRUE;
++}
++
+ static gboolean
+ gdm_session_handle_info_query (GdmDBusWorkerManager  *worker_manager_interface,
+                                GDBusMethodInvocation *invocation,
+@@ -1259,6 +1304,10 @@ export_worker_manager_interface (GdmSession      *self,
+                           "handle-choice-list-query",
+                           G_CALLBACK (gdm_session_handle_choice_list_query),
+                           self);
++        g_signal_connect (worker_manager_interface,
++                          "handle-custom-json-request",
++                          G_CALLBACK (gdm_session_handle_custom_json_request),
++                          self);
+ 
+         g_dbus_interface_skeleton_export (G_DBUS_INTERFACE_SKELETON (worker_manager_interface),
+                                           connection,
+@@ -1291,6 +1340,9 @@ unexport_worker_manager_interface (GdmSession           *self,
+         g_signal_handlers_disconnect_by_func (worker_manager_interface,
+                                               G_CALLBACK (gdm_session_handle_choice_list_query),
+                                               self);
++        g_signal_handlers_disconnect_by_func (worker_manager_interface,
++                                              G_CALLBACK (gdm_session_handle_custom_json_request),
++                                              self);
+ }
+ 
+ static gboolean
+@@ -1380,6 +1432,81 @@ export_user_verifier_choice_list_interface (GdmSession      *self,
+                              interface);
+ }
+ 
++static gboolean
++gdm_session_handle_client_custom_json_reply (GdmDBusUserVerifierCustomJSON *custom_json_interface,
++                                             GDBusMethodInvocation         *invocation,
++                                             const char                    *service_name,
++                                             const char                    *json,
++                                             GdmSession                    *self)
++{
++        g_autoptr(GError) error = NULL;
++        g_autoptr(JsonParser) parser = NULL;
++
++        g_debug ("GdmSession: user replied with custom JSON");
++
++        parser = json_parser_new_immutable ();
++        if (!json_parser_load_from_data (parser, json, -1, &error)) {
++                g_autofree char *message = NULL;
++
++                message = g_strdup_printf ("JSON reply is not valid: %s", error->message);
++                g_warning ("GdmSession: %s", message);
++
++                g_dbus_method_invocation_return_error_literal (invocation,
++                                                               G_DBUS_ERROR,
++                                                               G_DBUS_ERROR_NOT_SUPPORTED,
++                                                               message);
++                gdm_session_report_error (self, service_name,
++                                          G_DBUS_ERROR_NOT_SUPPORTED,
++                                          message);
++                return TRUE;
++        }
++
++        gdm_dbus_user_verifier_custom_json_complete_reply (custom_json_interface, invocation);
++        gdm_session_answer_query (self, service_name, json);
++        return TRUE;
++}
++
++static gboolean
++gdm_session_handle_client_custom_json_report_error (GdmDBusUserVerifierCustomJSON *custom_json_interface,
++                                                    GDBusMethodInvocation         *invocation,
++                                                    const char                    *service_name,
++                                                    const char                    *message,
++                                                    GdmSession                    *self)
++{
++        g_debug ("GdmSession: user reported custom JSON error: %s", message);
++
++        gdm_dbus_user_verifier_custom_json_complete_report_error (custom_json_interface, invocation);
++        gdm_session_report_error (self, service_name, G_DBUS_ERROR_ACCESS_DENIED, message);
++        return TRUE;
++}
++
++static void
++export_user_verifier_custom_json_interface (GdmSession      *self,
++                                             GDBusConnection *connection)
++{
++        GdmDBusUserVerifierCustomJSON *interface;
++
++        interface = GDM_DBUS_USER_VERIFIER_CUSTOM_JSON (gdm_dbus_user_verifier_custom_json_skeleton_new ());
++
++        g_signal_connect (interface,
++                          "handle-reply",
++                          G_CALLBACK (gdm_session_handle_client_custom_json_reply),
++                          self);
++        g_signal_connect (interface,
++                          "handle-report-error",
++                          G_CALLBACK (gdm_session_handle_client_custom_json_report_error),
++                          self);
++
++        g_dbus_interface_skeleton_export (G_DBUS_INTERFACE_SKELETON (interface),
++                                          connection,
++                                          GDM_SESSION_DBUS_OBJECT_PATH,
++                                          NULL);
++
++        g_hash_table_insert (self->user_verifier_extensions,
++                             gdm_dbus_user_verifier_custom_json_interface_info ()->name,
++                             interface);
++}
++
+ static gboolean
+ gdm_session_handle_client_enable_extensions (GdmDBusUserVerifier    *user_verifier_interface,
+                                              GDBusMethodInvocation  *invocation,
+@@ -1399,6 +1526,10 @@ gdm_session_handle_client_enable_extensions (GdmDBusUserVerifier    *user_verifi
+                             gdm_dbus_user_verifier_choice_list_interface_info ()->name) == 0)
+                         export_user_verifier_choice_list_interface (self, connection);
+ 
++                if (g_str_equal (extensions[i],
++                                 gdm_dbus_user_verifier_custom_json_interface_info ()->name))
++                        export_user_verifier_custom_json_interface (self, connection);
++
+         }
+ 
+         gdm_dbus_user_verifier_complete_enable_extensions (user_verifier_interface, invocation);
+@@ -3121,6 +3252,25 @@ gdm_session_answer_query (GdmSession *self,
+         }
+ }
+ 
++void
++gdm_session_report_error (GdmSession *self,
++                          const char *service_name,
++                          GDBusError  code,
++                          const char *message)
++{
++        GdmSessionConversation *conversation;
++
++        g_return_if_fail (GDM_IS_SESSION (self));
++        g_return_if_fail (service_name != NULL);
++
++        conversation = find_conversation_by_name (self, service_name);
++        if (conversation == NULL)
++                return;
++
++        g_dbus_method_invocation_return_error_literal (g_steal_pointer (&conversation->pending_invocation),
++                                                       G_DBUS_ERROR, code, message);
++}
++
+ void
+ gdm_session_cancel  (GdmSession *self)
+ {
+diff --git a/daemon/gdm-session.h b/daemon/gdm-session.h
+index 3b64ecd23..b9769d6b3 100644
+--- a/daemon/gdm-session.h
++++ b/daemon/gdm-session.h
+@@ -22,6 +22,7 @@
+ #define __GDM_SESSION_H
+ 
+ #include <glib-object.h>
++#include <gio/gio.h>
+ #include <sys/types.h>
+ 
+ G_BEGIN_DECLS
+@@ -120,6 +121,10 @@ void              gdm_session_close                       (GdmSession *session);
+ void              gdm_session_answer_query                (GdmSession *session,
+                                                            const char *service_name,
+                                                            const char *text);
++void              gdm_session_report_error                (GdmSession *session,
++                                                           const char *service_name,
++                                                           GDBusError  code,
++                                                           const char *message);
+ void              gdm_session_select_program              (GdmSession *session,
+                                                            const char *command_line);
+ void              gdm_session_select_session              (GdmSession *session,
+diff --git a/daemon/gdm-session.xml b/daemon/gdm-session.xml
+index 7935aeeaa..9ba2fb213 100644
+--- a/daemon/gdm-session.xml
++++ b/daemon/gdm-session.xml
+@@ -28,6 +28,14 @@
+       <arg name="query" direction="in" type="a{ss}"/>
+       <arg name="answer" direction="out" type="s"/>
+     </method>
++    <method name="CustomJSONRequest">
++      <annotation name="org.gtk.GDBus.C.Name" value="CustomJsonRequest" />
++      <arg name="service_name" direction="in" type="s"/>
++      <arg name="protocol" direction="in" type="s"/>
++      <arg name="version" direction="in" type="u"/>
++      <arg name="request" direction="in" type="s"/>
++      <arg name="response" direction="out" type="s"/>
++    </method>
+   </interface>
+   <interface name="org.gnome.DisplayManager.UserVerifier">
+     <method name="EnableExtensions">
+@@ -95,6 +103,22 @@
+       <arg name="list" type="a{ss}"/>
+     </signal>
+   </interface>
++  <interface name="org.gnome.DisplayManager.UserVerifier.CustomJSON">
++    <method name="Reply">
++      <arg name="service_name" direction="in" type="s"/>
++      <arg name="reply" direction="in" type="s"/>
++    </method>
++    <method name="ReportError">
++      <arg name="service_name" direction="in" type="s"/>
++      <arg name="error" direction="in" type="s"/>
++    </method>
++    <signal name="Request">
++      <arg name="service_name" type="s"/>
++      <arg name="protocol" type="s"/>
++      <arg name="version" type="u"/>
++      <arg name="request" type="s"/>
++    </signal>
++  </interface>
+   <interface name="org.gnome.DisplayManager.Greeter">
+     <method name="SelectSession">
+       <arg name="session" direction="in" type="s"/>
+diff --git a/daemon/meson.build b/daemon/meson.build
+index 41f30abef..c3a4c737b 100644
+--- a/daemon/meson.build
++++ b/daemon/meson.build
+@@ -60,6 +60,7 @@ gdm_daemon_deps = [
+   gobject_dep,
+   gio_dep,
+   gio_unix_dep,
++  json_glib,
+   libpam_dep,
+   x_deps,
+   xcb_dep,
+diff --git a/libgdm/gdm-client.c b/libgdm/gdm-client.c
+index 32d6c80f7..23e4b0bb6 100644
+--- a/libgdm/gdm-client.c
++++ b/libgdm/gdm-client.c
+@@ -230,6 +230,35 @@ on_user_verifier_choice_list_proxy_created (GObject            *source,
+         maybe_complete_user_verifier_proxy_operation (client, data);
+ }
+ 
++static void
++on_user_verifier_custom_json_proxy_created (GObject            *source,
++                                            GAsyncResult       *result,
++                                            UserVerifierData   *data)
++{
++        GHashTable *user_verifier_extensions;
++        g_autoptr(GdmClient) client = NULL;
++        GdmUserVerifierCustomJSON *custom_json;
++        g_autoptr(GError) error = NULL;
++
++        client = GDM_CLIENT (g_async_result_get_source_object (G_ASYNC_RESULT (data->task)));
++
++        user_verifier_extensions = g_object_get_qdata (G_OBJECT (data->user_verifier),
++                                                       gdm_client_user_verifier_extensions_quark ());
++        custom_json = gdm_user_verifier_custom_json_proxy_new_finish (result, &error);
++
++        if (custom_json == NULL) {
++                g_warning ("Couldn't create UserVerifier CustomJSON proxy: %s", error->message);
++                g_hash_table_remove (user_verifier_extensions,
++                                     gdm_user_verifier_custom_json_interface_info ()->name);
++        } else {
++                g_hash_table_replace (user_verifier_extensions,
++                                      gdm_user_verifier_custom_json_interface_info ()->name,
++                                      custom_json);
++        }
++
++        maybe_complete_user_verifier_proxy_operation (client, data);
++}
++
+ static void
+ on_user_verifier_extensions_enabled (GdmUserVerifier    *user_verifier,
+                                      GAsyncResult       *result,
+@@ -273,6 +302,17 @@ on_user_verifier_extensions_enabled (GdmUserVerifier    *user_verifier,
+                                                                  (GAsyncReadyCallback)
+                                                                  on_user_verifier_choice_list_proxy_created,
+                                                                  data);
++                } else if (g_str_equal (client->enabled_extensions[i],
++                                        gdm_user_verifier_custom_json_interface_info ()->name)) {
++                        g_hash_table_insert (user_verifier_extensions, client->enabled_extensions[i], NULL);
++                        gdm_user_verifier_custom_json_proxy_new (connection,
++                                                                 G_DBUS_PROXY_FLAGS_NONE,
++                                                                 NULL,
++                                                                 SESSION_DBUS_PATH,
++                                                                 cancellable,
++                                                                 (GAsyncReadyCallback)
++                                                                 on_user_verifier_custom_json_proxy_created,
++                                                                 data);
+                 } else {
+                         g_debug ("User verifier extension %s is unsupported", client->enabled_extensions[i]);
+                         g_hash_table_remove (user_verifier_extensions,
+@@ -732,6 +772,20 @@ gdm_client_get_user_verifier_sync (GdmClient     *client,
+                                                                                                                               NULL);
+                                                         if (choice_list_interface != NULL)
+                                                                     g_hash_table_insert (user_verifier_extensions, client->enabled_extensions[i], choice_list_interface);
++                                            } else if (g_str_equal (client->enabled_extensions[i],
++                                                       gdm_user_verifier_custom_json_interface_info ()->name)) {
++                                                        GdmUserVerifierCustomJSON *custom_json_interface;
++                                                        custom_json_interface = gdm_user_verifier_custom_json_proxy_new_sync (connection,
++                                                                                                                                G_DBUS_PROXY_FLAGS_NONE,
++                                                                                                                                NULL,
++                                                                                                                                SESSION_DBUS_PATH,
++                                                                                                                                cancellable,
++                                                                                                                                NULL);
++                                                        if (custom_json_interface != NULL) {
++                                                                g_hash_table_insert (user_verifier_extensions,
++                                                                                     client->enabled_extensions[i],
++                                                                                     custom_json_interface);
++                                                        }
+                                             }
+                                 }
+                         }
+@@ -838,6 +892,24 @@ gdm_client_get_user_verifier_finish (GdmClient       *client,
+         return user_verifier;
+ }
+ 
++static GHashTable *
++get_user_verifier_extensions (GdmClient *client)
++{
++        GHashTable *user_verifier_extensions = NULL;
++
++        if (client->user_verifier_for_reauth != NULL) {
++                user_verifier_extensions = g_object_get_qdata (G_OBJECT (client->user_verifier_for_reauth),
++                                                               gdm_client_user_verifier_extensions_quark ());
++        }
++
++        if (user_verifier_extensions == NULL && client->user_verifier != NULL) {
++                user_verifier_extensions = g_object_get_qdata (G_OBJECT (client->user_verifier),
++                                                               gdm_client_user_verifier_extensions_quark ());
++        }
++
++        return user_verifier_extensions;
++}
++
+ /**
+  * gdm_client_get_user_verifier_choice_list:
+  * @client: a #GdmClient
+@@ -851,7 +923,7 @@ gdm_client_get_user_verifier_finish (GdmClient       *client,
+ GdmUserVerifierChoiceList *
+ gdm_client_get_user_verifier_choice_list (GdmClient *client)
+ {
+-        GHashTable *user_verifier_extensions = NULL;
++        GHashTable *user_verifier_extensions = get_user_verifier_extensions (client);
+ 
+         if (client->user_verifier_for_reauth != NULL) {
+                 user_verifier_extensions = g_object_get_qdata (G_OBJECT (client->user_verifier_for_reauth),
+@@ -863,11 +935,31 @@ gdm_client_get_user_verifier_choice_list (GdmClient *client)
+                                                                gdm_client_user_verifier_extensions_quark ());
+         }
+ 
++        return g_hash_table_lookup (user_verifier_extensions,
++                                    gdm_user_verifier_choice_list_interface_info ()->name);
++}
++
++/**
++ * gdm_client_get_user_verifier_custom_json:
++ * @client: a #GdmClient
++ *
++ * Gets a #GdmUserVerifierCustomJSON object that can be used to
++ * verify a user's local account.
++ *
++ * Returns: (transfer none): #GdmUserVerifierCustomJSON or %NULL if user
++ * verifier isn't yet fetched, or daemon doesn't support the custom JSON
++ * protocol
++ */
++GdmUserVerifierCustomJSON *
++gdm_client_get_user_verifier_custom_json (GdmClient *client)
++{
++        GHashTable *user_verifier_extensions = get_user_verifier_extensions (client);
++
+         if (user_verifier_extensions == NULL)
+                 return NULL;
+ 
+         return g_hash_table_lookup (user_verifier_extensions,
+-                                    gdm_user_verifier_choice_list_interface_info ()->name);
++                                    gdm_user_verifier_custom_json_interface_info ()->name);
+ }
+ 
+ static void
+@@ -1435,7 +1527,8 @@ gdm_client_new (void)
+  * @extensions: (array zero-terminated=1) (element-type utf8): a list of extensions
+  *
+  * Enables GDM's pam extensions.  Currently, only
+- * org.gnome.DisplayManager.UserVerifier.ChoiceList is supported.
++ * `org.gnome.DisplayManager.UserVerifier.ChoiceList` and
++ * `org.gnome.DisplayManager.UserVerifier.CustomJSON` are supported.
+  */
+ void
+ gdm_client_set_enabled_extensions (GdmClient          *client,
+@@ -1449,7 +1542,8 @@ gdm_client_set_enabled_extensions (GdmClient          *client,
+  * @client: a #GdmClient
+  *
+  * Gets GDM's enabled pam extensions.  Currently, only
+- * org.gnome.DisplayManager.UserVerifier.ChoiceList is supported.
++ * `org.gnome.DisplayManager.UserVerifier.ChoiceList` and
++ * `org.gnome.DisplayManager.UserVerifier.CustomJSON` are supported.
+  *
+  * Returns: (array zero-terminated=1) (element-type utf8) (transfer: full): a list of extensions
+  */
+diff --git a/libgdm/gdm-client.h b/libgdm/gdm-client.h
+index 4993cb86d..2e97fca13 100644
+--- a/libgdm/gdm-client.h
++++ b/libgdm/gdm-client.h
+@@ -71,6 +71,8 @@ GdmUserVerifier   *gdm_client_get_user_verifier_sync    (GdmClient *client,
+ 
+ GdmUserVerifierChoiceList *gdm_client_get_user_verifier_choice_list  (GdmClient *client);
+ 
++GdmUserVerifierCustomJSON *gdm_client_get_user_verifier_custom_json (GdmClient *client);
++
+ void               gdm_client_get_greeter               (GdmClient     *client,
+                                                          GCancellable         *cancellable,
+                                                          GAsyncReadyCallback   callback,
+diff --git a/meson.build b/meson.build
+index 65963195a..d6bc7b955 100644
+--- a/meson.build
++++ b/meson.build
+@@ -42,11 +42,20 @@ gudev_dep = dependency('gudev-1.0', version: '>= 232')
+ 
+ glib_min_version = '2.56.0'
+ 
++# PAM
++libpam_dep = cc.find_library('pam')
++pam_extensions_supported = cc.has_header_symbol(
++  'security/pam_appl.h', 'PAM_BINARY_PROMPT',
++  dependencies: libpam_dep)
++
++
+ glib_dep = dependency('glib-2.0', version: '>=' + glib_min_version)
+ gobject_dep = dependency('gobject-2.0', version: '>=' + glib_min_version)
+ gio_dep = dependency('gio-2.0', version: '>=' + glib_min_version)
+ gio_unix_dep = dependency('gio-unix-2.0', version: '>=' + glib_min_version)
+ gtk_dep = dependency('gtk+-3.0', version: '>= 2.91.1')
++json_glib = dependency('json-glib-1.0', version: '>= 1.2.0',
++  required: pam_extensions_supported)
+ libcanberra_gtk_dep = dependency('libcanberra-gtk3', version: '>= 0.4')
+ accountsservice_dep = dependency('accountsservice', version: '>= 0.6.35')
+ xcb_dep = dependency('xcb')
+@@ -162,10 +171,6 @@ int main(int argc, char **argv) {
+ }
+ ''')
+ 
+-# PAM
+-libpam_dep = cc.find_library('pam')
+-pam_extensions_supported = cc.has_header_symbol('security/pam_appl.h', 'PAM_BINARY_PROMPT')
+-
+ default_pam_config = get_option('default-pam-config')
+ # If requested, try autodetecting from release files (see NetworkManager source)
+ if default_pam_config == 'autodetect'
+diff --git a/pam-extensions/gdm-custom-json-pam-extension.h b/pam-extensions/gdm-custom-json-pam-extension.h
+new file mode 100644
+index 000000000..a50ae1264
+--- /dev/null
++++ b/pam-extensions/gdm-custom-json-pam-extension.h
+@@ -0,0 +1,61 @@
++/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 8 -*-
++ *
++ * Copyright (C) 2023 Canonical Ltd.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
++ *
++ * Author: Marco Trevisan (Treviño) <marco.trevisan@canonical.com>
++ *
++ */
++
++#pragma once
++
++#include "gdm-pam-extensions-common.h"
++
++typedef struct {
++        GdmPamExtensionMessage header;
++
++        const char protocol_name[64];
++        unsigned int version;
++        char *json;
++} GdmPamExtensionJSONProtocol;
++
++#define GDM_PAM_EXTENSION_CUSTOM_JSON "org.gnome.DisplayManager.UserVerifier.CustomJSON"
++#define GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE sizeof (GdmPamExtensionJSONProtocol)
++
++#define GDM_PAM_EXTENSION_CUSTOM_JSON_REQUEST_INIT(request, proto_name, proto_version, json_str) \
++{ \
++        size_t proto_len = strnlen ((proto_name), sizeof ((request)->protocol_name) - 1); \
++        GDM_PAM_EXTENSION_LOOK_UP_TYPE (GDM_PAM_EXTENSION_CUSTOM_JSON, &((request)->header.type)); \
++        (request)->header.length = htobe32 (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE); \
++        memcpy ((char *)(request)->protocol_name, (proto_name), proto_len); \
++        ((char *)((request)->protocol_name))[proto_len] = '\0'; \
++        (request)->version = (proto_version); \
++        (request)->json = (char *) (json_str); \
++}
++
++#define GDM_PAM_EXTENSION_CUSTOM_JSON_RESPONSE_INIT(response, proto_name, proto_version) \
++{ \
++        size_t proto_len = strnlen ((proto_name), sizeof ((response)->protocol_name) - 1); \
++        GDM_PAM_EXTENSION_LOOK_UP_TYPE (GDM_PAM_EXTENSION_CUSTOM_JSON, &((response)->header.type)); \
++        (response)->header.length = htobe32 (GDM_PAM_EXTENSION_CUSTOM_JSON_SIZE); \
++        memcpy ((char *)(response)->protocol_name, (proto_name), proto_len); \
++        ((char *)((response)->protocol_name))[proto_len] = '\0'; \
++        (response)->version = (proto_version); \
++        (response)->json = NULL; \
++}
++
++#define GDM_PAM_EXTENSION_REPLY_TO_CUSTOM_JSON_RESPONSE(reply) \
++        ((GdmPamExtensionJSONProtocol *) (void *) reply->resp)
+diff --git a/pam-extensions/gdm-pam-extensions.h b/pam-extensions/gdm-pam-extensions.h
+index cdf34f382..9df8e37b8 100644
+--- a/pam-extensions/gdm-pam-extensions.h
++++ b/pam-extensions/gdm-pam-extensions.h
+@@ -1,6 +1,7 @@
+ /* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 8 -*-
+  *
+  * Copyright (C) 2017 Red Hat, Inc.
++ * Copyright (C) 2023 Canonical Ltd.
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -21,5 +22,6 @@
+ #define GDM_PAM_EXTENSIONS_H
+ 
+ #include "gdm-choice-list-pam-extension.h"
++#include "gdm-custom-json-pam-extension.h"
+ 
+ #endif
+-- 
+2.47.3
+
+
+From b55b99e95199b22fa58b4522712b880224d5975c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marco=20Trevisan=20=28Trevi=C3=B1o=29?= <mail@3v1n0.net>
+Date: Thu, 23 Nov 2023 00:54:35 +0100
+Subject: [PATCH 6/7] session: Use literal errors when we don't do any
+ formatting
+
+---
+ daemon/gdm-session.c | 20 ++++++++++----------
+ 1 file changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/daemon/gdm-session.c b/daemon/gdm-session.c
+index 904143677..6f53b5dfa 100644
+--- a/daemon/gdm-session.c
++++ b/daemon/gdm-session.c
+@@ -756,9 +756,9 @@ gdm_session_handle_choice_list_query (GdmDBusWorkerManager  *worker_manager_inte
+                                                              gdm_dbus_user_verifier_choice_list_interface_info ()->name);
+ 
+         if (choice_list_interface == NULL) {
+-                g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
+-                                                       G_DBUS_ERROR_NOT_SUPPORTED,
+-                                                       "ChoiceList interface not supported by client");
++                g_dbus_method_invocation_return_error_literal (invocation, G_DBUS_ERROR,
++                                                               G_DBUS_ERROR_NOT_SUPPORTED,
++                                                               "ChoiceList interface not supported by client");
+                 return TRUE;
+         }
+ 
+@@ -1201,9 +1201,9 @@ register_worker (GdmDBusWorkerManager  *worker_manager_interface,
+         if (conversation == NULL) {
+                 g_warning ("GdmSession: New worker connection is from unknown source");
+ 
+-                g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
+-                                                       G_DBUS_ERROR_ACCESS_DENIED,
+-                                                       "Connection is not from a known conversation");
++                g_dbus_method_invocation_return_error_literal (invocation, G_DBUS_ERROR,
++                                                               G_DBUS_ERROR_ACCESS_DENIED,
++                                                               "Connection is not from a known conversation");
+                 g_dbus_connection_close_sync (connection, NULL, NULL);
+                 return TRUE;
+         }
+@@ -1387,10 +1387,10 @@ begin_verification_conversation (GdmSession            *self,
+         }
+ 
+         if (conversation == NULL) {
+-                g_dbus_method_invocation_return_error (invocation,
+-                                                       G_DBUS_ERROR,
+-                                                       G_DBUS_ERROR_SPAWN_FAILED,
+-                                                       _("Could not create authentication helper process"));
++                g_dbus_method_invocation_return_error_literal (invocation,
++                                                               G_DBUS_ERROR,
++                                                               G_DBUS_ERROR_SPAWN_FAILED,
++                                                               _("Could not create authentication helper process"));
+         }
+ 
+         return conversation;
+-- 
+2.47.3
+
+
+From edc1af093fa697aabe79d8042b82cbf108ba6ce2 Mon Sep 17 00:00:00 2001
+From: Sergio Durigan Junior <sergio.durigan@canonical.com>
+Date: Tue, 2 Jan 2024 19:27:33 -0500
+Subject: [PATCH 7/7] gdm-pam-extensions: Install
+ gdm-custom-json-pam-extension.h header
+
+Signed-off-by: Sergio Durigan Junior <sergio.durigan@canonical.com>
+---
+ pam-extensions/meson.build | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/pam-extensions/meson.build b/pam-extensions/meson.build
+index 02f4ff601..59567c9e1 100644
+--- a/pam-extensions/meson.build
++++ b/pam-extensions/meson.build
+@@ -9,7 +9,8 @@ if pam_extensions_supported
+ 
+   header_files = files('gdm-pam-extensions.h',
+                        'gdm-pam-extensions-common.h',
+-                       'gdm-choice-list-pam-extension.h')
++                       'gdm-choice-list-pam-extension.h',
++                       'gdm-custom-json-pam-extension.h')
+ 
+   pam_extensions_inc = include_directories('.')
+   install_headers(header_files,
+-- 
+2.47.3
+
