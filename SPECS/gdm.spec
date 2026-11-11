@@ -11,7 +11,7 @@
 Name: gdm
 Epoch: 1
 Version: 40.1
-Release: 50%{?dist}
+Release: 51%{?dist}
 Summary: The GNOME Display Manager
 
 License: GPLv2+
@@ -396,6 +396,10 @@ dconf update || :
 %{_libdir}/pkgconfig/gdm-pam-extensions.pc
 
 %changelog
+* Fri Sep 11 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-51
+- Fix VT unresponsive on rescue mode
+  Resolves: https://redhat.atlassian.net/browse/RHEL-183234
+
 * Tue Aug 18 2026 Joan Torres Lopez <joantolo@redhat.com> - 40.1-50
 - Update unified authentication patch to drop passkey/web auth settings
   Resolves: https://redhat.atlassian.net/browse/RHEL-236551
