@@ -1,0 +1,40 @@
+From 487a71057701dffb8dd6ce9a283ddd30c6edb363 Mon Sep 17 00:00:00 2001
+From: divinehawk <9158262+divinehawk@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 17:04:55 -0400
+Subject: [PATCH] session: Emit SelectedUserChanged when the user name changes
+
+The Greeter interface declares a SelectedUserChanged signal, but it has
+not been emitted since GdmSession was ported to GDBus in commit
+53e24b49b, so the greeter never learns about a user name that a PAM
+module sets during the conversation.
+
+This happens with smartcard login without a user name: pam_sss with
+allow_missing_name looks up the user from the certificate and sets
+PAM_USER before asking for the PIN. Emitting the signal lets the greeter
+show which user is being logged in, as it does when the user is picked
+from the user list.
+
+Part-of: <https://gitlab.gnome.org/GNOME/gdm/-/merge_requests/405>
+---
+ daemon/gdm-session.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/daemon/gdm-session.c b/daemon/gdm-session.c
+index f36366e3c..180d1e1fe 100644
+--- a/daemon/gdm-session.c
++++ b/daemon/gdm-session.c
+@@ -1031,6 +1031,11 @@ worker_on_username_changed (GdmDBusWorker          *worker,
+ 
+         gdm_session_select_user (self, (strlen (username) > 0) ? g_strdup (username) : NULL);
+         gdm_session_defaults_changed (self);
++
++        if (self->greeter_interface != NULL) {
++                gdm_dbus_greeter_emit_selected_user_changed (self->greeter_interface,
++                                                             username);
++        }
+ }
+ 
+ static void
+-- 
+2.56.0
+
