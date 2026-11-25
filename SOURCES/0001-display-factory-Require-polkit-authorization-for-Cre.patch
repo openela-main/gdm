@@ -13,14 +13,14 @@ CreateUserDisplay/DestroyUserDisplay, to cover this method too.
 
 CVE: CVE-2026-132858
 ---
- daemon/gdm-display-factory.c | 16 +++++++++++++---
- 1 file changed, 13 insertions(+), 3 deletions(-)
+ daemon/gdm-display-factory.c | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
 
 diff --git a/daemon/gdm-display-factory.c b/daemon/gdm-display-factory.c
 index 2a1c1b2b3..3dcff3dac 100644
 --- a/daemon/gdm-display-factory.c
 +++ b/daemon/gdm-display-factory.c
-@@ -176,6 +176,7 @@ gdm_display_factory_authorize_manage_user_displays (GdmDisplayFactory      *fact
+@@ -175,6 +175,7 @@ gdm_display_factory_authorize_manage_user_displays (GdmDisplayFactory      *fact
          g_autoptr (PolkitSubject) subject = NULL;
          g_autoptr (PolkitDetails) details = NULL;
          g_autoptr (GError) local_error = NULL;
@@ -28,17 +28,18 @@ index 2a1c1b2b3..3dcff3dac 100644
          const char *user = NULL;
          const char *action;
          const char *method;
-@@ -188,7 +189,8 @@ gdm_display_factory_authorize_manage_user_displays (GdmDisplayFactory      *fact
+@@ -187,7 +188,9 @@ gdm_display_factory_authorize_manage_user_displays (GdmDisplayFactory      *fact
  
          method = g_dbus_method_invocation_get_method_name (invocation);
          if (g_strcmp0 (method, "CreateUserDisplay") != 0 &&
 -            g_strcmp0 (method, "DestroyUserDisplay") != 0)
 +            g_strcmp0 (method, "DestroyUserDisplay") != 0 &&
-+            g_strcmp0 (method, "CreateRemoteDisplay") != 0)
++            g_strcmp0 (method, "CreateRemoteDisplay") != 0 &&
++            g_strcmp0 (method, "CreateRemoteDisplay2") != 0)
                  return TRUE;
  
          if (!ensure_polkit_authority (factory, &local_error)) {
-@@ -201,9 +203,17 @@ gdm_display_factory_authorize_manage_user_displays (GdmDisplayFactory      *fact
+@@ -200,9 +203,18 @@ gdm_display_factory_authorize_manage_user_displays (GdmDisplayFactory      *fact
          priv = gdm_display_factory_get_instance_private (factory);
  
          parameters = g_dbus_method_invocation_get_parameters (invocation);
@@ -46,11 +47,12 @@ index 2a1c1b2b3..3dcff3dac 100644
          details = polkit_details_new ();
 -        polkit_details_insert (details, "user", user);
 +
-+        if (g_strcmp0 (method, "CreateRemoteDisplay") == 0) {
++        if (g_strcmp0 (method, "CreateRemoteDisplay2") == 0) {
 +                g_variant_get (parameters, "(@a{sv})", &properties);
-+                g_variant_lookup (properties, "preauthenticated-user", "s", &user);
-+        } else {
-+                g_variant_get (parameters, "(s)", &user);
++                g_variant_lookup (properties, "preauthenticated-user", "&s", &user);
++        } else if (g_strcmp0 (method, "CreateUserDisplay") == 0 ||
++                   g_strcmp0 (method, "DestroyUserDisplay") == 0) {
++                g_variant_get (parameters, "(&s)", &user);
 +        }
 +
 +        if (user != NULL)
